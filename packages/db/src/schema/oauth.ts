@@ -10,7 +10,7 @@ export const oauthConnections = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     providerId: text("provider_id").notNull(),
-    status: text("status").notNull(),
+    status: text("status").$type<"active" | "expired" | "revoked" | "error">().notNull(),
     accountId: text("account_id"),
     accountLabel: text("account_label"),
     scopes: text("scopes").array().notNull().default(sql`'{}'`),
@@ -24,7 +24,10 @@ export const oauthConnections = pgTable(
     lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
     refreshAttemptCount: integer("refresh_attempt_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
   },
   (table) => ({
     companyProviderUniq: uniqueIndex("oauth_connections_company_provider_uq").on(
