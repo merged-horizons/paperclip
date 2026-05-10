@@ -106,7 +106,7 @@ export const issuesApi = {
     data: {
       actionId?: string;
       outcome: IssueRecoveryActionOutcome;
-      sourceIssueStatus?: "done" | "in_review" | "blocked" | null;
+      sourceIssueStatus?: "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
     },
   ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),

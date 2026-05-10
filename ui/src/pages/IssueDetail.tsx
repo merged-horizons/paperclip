@@ -8,7 +8,7 @@ import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi } from "../api/access";
+import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
@@ -210,6 +210,20 @@ function treeControlPreviewErrorCopy(error: unknown): string {
     if (error.status === 422) return "This subtree action is currently invalid for the selected issues.";
   }
   return error instanceof Error ? error.message : "Unable to load preview.";
+}
+
+function canBoardResolveRecoveryAction(
+  companyId: string | null | undefined,
+  boardAccess: CurrentBoardAccess | undefined,
+) {
+  if (!companyId || !boardAccess) return false;
+  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
+
+  const membership = boardAccess.memberships?.find(
+    (item) => item.companyId === companyId && item.status === "active",
+  );
+  if (!membership) return boardAccess.companyIds.includes(companyId) && !boardAccess.memberships;
+  return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
 }
 
 function resolveRunningIssueRun(
@@ -1391,6 +1405,7 @@ export function IssueDetail() {
     selectedCompanyId
     && boardAccess?.companyIds?.includes(selectedCompanyId),
   );
+  const canResolveBoardRecoveryAction = canBoardResolveRecoveryAction(selectedCompanyId, boardAccess);
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
@@ -1730,7 +1745,7 @@ export function IssueDetail() {
     mutationFn: (data: {
       actionId?: string;
       outcome: IssueRecoveryActionOutcome;
-      sourceIssueStatus?: "done" | "in_review" | "blocked" | null;
+      sourceIssueStatus?: "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
     }) => issuesApi.resolveRecoveryAction(issueId!, data),
     onSuccess: ({ issue: nextIssue }) => {
@@ -3872,7 +3887,7 @@ export function IssueDetail() {
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
               recoveryAction={issue.activeRecoveryAction ?? null}
               onResolveRecoveryAction={handleResolveRecoveryAction}
-              canCancelRecoveryAction={canManageTreeControl}
+              canCancelRecoveryAction={canResolveBoardRecoveryAction}
               legacyRecoverySourceIssue={legacyRecoverySourceIssue}
               comments={threadComments}
               locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
