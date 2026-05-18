@@ -38,7 +38,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: { id: "company-1", name: "Paperclip", issuePrefix: "PAP" },
     selectedCompanyId: "company-1",
   }),
 }));
@@ -130,6 +130,54 @@ describe("CloudUpstream", () => {
       "run-1",
       { entityType: "agents" },
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("sends a company-prefixed redirectUri when starting Connect", async () => {
+    mockCloudUpstreamsApi.list.mockResolvedValue({ connections: [], runs: [] });
+    mockCloudUpstreamsApi.startConnect.mockResolvedValue({
+      pendingConnectionId: "pending-1",
+      authorizationUrl: "https://cloud.example/upstream-consent?state=abc",
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CloudUpstream />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='Paperclip Cloud stack URL']");
+    expect(input).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input!, "https://cloud.example/PAP/dashboard");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    const connectButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Connect") as HTMLButtonElement | undefined;
+    expect(connectButton).toBeTruthy();
+
+    await act(async () => {
+      connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockCloudUpstreamsApi.startConnect).toHaveBeenCalledWith({
+      companyId: "company-1",
+      remoteUrl: "https://cloud.example/PAP/dashboard",
+      redirectUri: `${window.location.origin}/PAP/company/settings/cloud-upstream`,
+    });
 
     await act(async () => {
       root.unmount();

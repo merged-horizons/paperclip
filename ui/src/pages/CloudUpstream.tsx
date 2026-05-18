@@ -24,6 +24,7 @@ import { cloudUpstreamsApi } from "@/api/cloudUpstreams";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { applyCompanyPrefix } from "@/lib/company-routes";
 import { Link, useLocation } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -101,6 +102,8 @@ export function CloudUpstream() {
   const state = callbackParams.get("state");
   const callbackError = callbackParams.get("error");
 
+  const settingsPath = applyCompanyPrefix("/company/settings/cloud-upstream", selectedCompany?.issuePrefix ?? null);
+
   const finishMutation = useMutation({
     mutationFn: (input: { pendingConnectionId: string; code: string; state: string }) =>
       cloudUpstreamsApi.finishConnect(input),
@@ -109,7 +112,7 @@ export function CloudUpstream() {
       setNotice("Cloud upstream connection approved.");
       setActionError(null);
       await invalidateUpstreams();
-      window.history.replaceState(null, "", "/company/settings/cloud-upstream");
+      window.history.replaceState(null, "", settingsPath);
     },
     onError: (error) => setActionError(error instanceof Error ? error.message : "Failed to finish connection."),
   });
@@ -135,7 +138,7 @@ export function CloudUpstream() {
       cloudUpstreamsApi.startConnect({
         companyId: selectedCompanyId!,
         remoteUrl,
-        redirectUri: `${window.location.origin}/company/settings/cloud-upstream`,
+        redirectUri: `${window.location.origin}${settingsPath}`,
       }),
     onSuccess: (result) => {
       localStorage.setItem(PENDING_CONNECTION_KEY, result.pendingConnectionId);
