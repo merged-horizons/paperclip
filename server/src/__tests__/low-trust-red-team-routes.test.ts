@@ -572,6 +572,33 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     });
   });
 
+  it("propagates denied low-trust policy conflicts on control-plane guards", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const conflictingExecutionPolicy = {
+      authorizationPolicy: {
+        trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: fixture.company.id,
+          rootIssueId: fixture.issues.siblingOutOfScope.id,
+        },
+      },
+    };
+    await db.update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId: fixture.issues.assignedReview.id,
+          executionPolicy: conflictingExecutionPolicy,
+        },
+      })
+      .where(eq(heartbeatRuns.id, fixture.runs.lowTrust.id));
+
+    const res = await request(createApp(db, agentActor(fixture)))
+      .get(`/api/issues/${fixture.issues.assignedReview.id}/approvals`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Low-trust boundary root issue scopes do not overlap.");
+  });
+
   it("restricts low-trust self inspection without changing standard-agent visibility", async () => {
     const fixture = await seedLowTrustFixture(db);
 

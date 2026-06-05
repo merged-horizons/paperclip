@@ -1040,6 +1040,9 @@ export function issueRoutes(
       agentId: req.actor.agentId,
       runId: req.actor.runId,
     }, companyId, issue);
+    if (resolution?.kind === "denied") {
+      throw forbidden(resolution.detail);
+    }
     return resolution?.kind === "low_trust_review";
   }
 
