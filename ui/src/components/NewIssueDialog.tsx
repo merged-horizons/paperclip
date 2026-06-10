@@ -147,8 +147,8 @@ const ISSUE_WORK_MODE_OPTIONS: ReadonlyArray<{
   label: string;
   icon: typeof Hammer;
 }> = [
-  { value: "standard", label: "Standard", icon: Hammer },
-  { value: "planning", label: "Planning", icon: ClipboardList },
+  { value: "standard", label: "Agent mode", icon: Hammer },
+  { value: "planning", label: "Plan mode", icon: ClipboardList },
 ];
 
 function loadDraft(): IssueDraft | null {

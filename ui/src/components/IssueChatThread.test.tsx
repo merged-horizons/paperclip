@@ -15,8 +15,6 @@ import {
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
-import { ToastProvider } from "../context/ToastContext";
-import { ToastViewport } from "./ToastViewport";
 import type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
@@ -418,7 +416,7 @@ describe("IssueChatThread", () => {
     );
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("data-pending-work-mode")).toBe("planning");
-    expect(toggle?.textContent).toContain("Planning");
+    expect(toggle?.textContent).toContain("Plan mode");
 
     act(() => {
       root.unmount();
@@ -446,13 +444,13 @@ describe("IssueChatThread", () => {
       );
     });
 
-    // The mode chip is always present (mockup rev 5) — neutral "Standard" here.
+    // The mode chip is always present (mockup rev 5) — neutral "Agent mode" here.
     const chip = container.querySelector(
       '[data-testid="issue-chat-composer-work-mode-toggle"]',
     ) as HTMLButtonElement | null;
     expect(chip).not.toBeNull();
     expect(chip?.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip?.textContent).toContain("Standard");
+    expect(chip?.textContent).toContain("Agent mode");
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]');
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
@@ -466,7 +464,7 @@ describe("IssueChatThread", () => {
       '[data-testid="issue-chat-composer-work-mode-menu-toggle"]',
     ) as HTMLButtonElement | null;
     expect(menuItem).not.toBeNull();
-    expect(menuItem?.textContent).toContain("Switch to planning");
+    expect(menuItem?.textContent).toContain("Switch to plan mode");
 
     act(() => {
       menuItem?.click();
@@ -476,7 +474,7 @@ describe("IssueChatThread", () => {
     expect(onWorkModeChange).not.toHaveBeenCalled();
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
     expect(composer?.className).toContain("amber");
-    expect(chip?.textContent).toContain("Planning");
+    expect(chip?.textContent).toContain("Plan mode");
 
     act(() => {
       root.unmount();
@@ -2603,31 +2601,28 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("warns once before sending a reply with no assignee selected", async () => {
+  it("opens a warning dialog before sending a reply with no assignee selected and posts on Send anyway", async () => {
     const root = createRoot(container);
 
     act(() => {
       root.render(
-        <ToastProvider>
-          <ToastViewport />
-          <MemoryRouter>
-            <IssueChatThread
-              comments={[]}
-              linkedRuns={[]}
-              timelineEvents={[]}
-              liveRuns={[]}
-              onAdd={async () => {}}
-              enableReassign
-              reassignOptions={[
-                { id: "", label: "No assignee" },
-                { id: "agent:agent-1", label: "Agent 1" },
-              ]}
-              currentAssigneeValue=""
-              suggestedAssigneeValue=""
-              enableLiveTranscriptPolling={false}
-            />
-          </MemoryRouter>
-        </ToastProvider>,
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableReassign
+            reassignOptions={[
+              { id: "", label: "No assignee" },
+              { id: "agent:agent-1", label: "Agent 1" },
+            ]}
+            currentAssigneeValue=""
+            suggestedAssigneeValue=""
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
       );
     });
 
@@ -2652,10 +2647,18 @@ describe("IssueChatThread", () => {
     });
 
     expect(appendMock).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("No assignee selected");
+    const dialog = document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("No assignee selected");
+    expect(dialog?.textContent).toContain("no agent will be woken");
+
+    const sendAnyway = document.querySelector(
+      '[data-testid="issue-chat-no-assignee-send-anyway"]',
+    ) as HTMLButtonElement | null;
+    expect(sendAnyway).not.toBeNull();
 
     await act(async () => {
-      submitButton?.click();
+      sendAnyway?.click();
     });
 
     expect(appendMock).toHaveBeenCalledTimes(1);
@@ -2664,6 +2667,72 @@ describe("IssueChatThread", () => {
         content: [{ type: "text", text: "Reply without assignee" }],
       }),
     );
+    expect(document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not post when choosing Go back in the no-assignee warning dialog", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableReassign
+            reassignOptions={[
+              { id: "", label: "No assignee" },
+              { id: "agent:agent-1", label: "Agent 1" },
+            ]}
+            currentAssigneeValue=""
+            suggestedAssigneeValue=""
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Send",
+    ) as HTMLButtonElement | undefined;
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Reply without assignee");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]')).not.toBeNull();
+
+    const goBack = document.querySelector(
+      '[data-testid="issue-chat-no-assignee-go-back"]',
+    ) as HTMLButtonElement | null;
+    expect(goBack).not.toBeNull();
+
+    await act(async () => {
+      goBack?.click();
+    });
+
+    expect(appendMock).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]')).toBeNull();
+    // The composer keeps the draft so the user can pick an assignee and resend.
+    const editorAfter = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(editorAfter?.value).toBe("Reply without assignee");
 
     act(() => {
       root.unmount();
@@ -2675,26 +2744,23 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.render(
-        <ToastProvider>
-          <ToastViewport />
-          <MemoryRouter>
-            <IssueChatThread
-              comments={[]}
-              linkedRuns={[]}
-              timelineEvents={[]}
-              liveRuns={[]}
-              onAdd={async () => {}}
-              enableReassign
-              reassignOptions={[
-                { id: "", label: "No assignee" },
-                { id: "agent:agent-1", label: "Agent 1" },
-              ]}
-              currentAssigneeValue="agent:agent-1"
-              suggestedAssigneeValue="agent:agent-1"
-              enableLiveTranscriptPolling={false}
-            />
-          </MemoryRouter>
-        </ToastProvider>,
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableReassign
+            reassignOptions={[
+              { id: "", label: "No assignee" },
+              { id: "agent:agent-1", label: "Agent 1" },
+            ]}
+            currentAssigneeValue="agent:agent-1"
+            suggestedAssigneeValue="agent:agent-1"
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
       );
     });
 

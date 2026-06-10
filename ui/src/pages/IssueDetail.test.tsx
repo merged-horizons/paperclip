@@ -1614,7 +1614,7 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       issueWorkMode: "planning",
     });
-    expect(container.textContent).toContain("Planning");
+    expect(container.textContent).toContain("Plan mode");
   });
 
   it("forwards composer work mode changes to the issues API", async () => {

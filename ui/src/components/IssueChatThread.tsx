@@ -83,6 +83,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -102,7 +112,6 @@ import {
   shouldPreserveComposerViewport,
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import { useOptionalToastActions } from "../context/ToastContext";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import {
@@ -3348,7 +3357,6 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   onWorkModeChange,
 }, forwardedRef) {
   const api = useAui();
-  const toastActions = useOptionalToastActions();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -3357,12 +3365,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
-  const [unassignedConfirmed, setUnassignedConfirmed] = useState(false);
+  const [noAssigneeDialogOpen, setNoAssigneeDialogOpen] = useState(false);
   const resolvedIssueWorkMode: IssueWorkMode = issueWorkMode ?? "standard";
   const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(resolvedIssueWorkMode);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const canToggleWorkMode = typeof onWorkModeChange === "function";
   const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const reassignTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const focusAssigneeOnDialogCloseRef = useRef(false);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3409,10 +3419,6 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   }, [effectiveSuggestedAssigneeValue]);
 
   useEffect(() => {
-    setUnassignedConfirmed(false);
-  }, [reassignTarget]);
-
-  useEffect(() => {
     setPendingWorkMode(resolvedIssueWorkMode);
   }, [resolvedIssueWorkMode]);
 
@@ -3434,20 +3440,17 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     if (!trimmed || submitting) return;
 
     const composerHasAssigneePicker = enableReassign && reassignOptions.length > 0;
-    if (
-      composerHasAssigneePicker
-      && isUnassignedReassignValue(reassignTarget)
-      && !unassignedConfirmed
-    ) {
-      toastActions?.pushToast({
-        title: "No assignee selected",
-        body: "Pick an assignee or click Send again to post without one.",
-        tone: "warn",
-        dedupeKey: `issue-chat-no-assignee:${draftKey ?? ""}`,
-      });
-      setUnassignedConfirmed(true);
+    if (composerHasAssigneePicker && isUnassignedReassignValue(reassignTarget)) {
+      setNoAssigneeDialogOpen(true);
       return;
     }
+
+    await submitComment();
+  }
+
+  async function submitComment() {
+    const trimmed = body.trim();
+    if (!trimmed || submitting) return;
 
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : undefined;
@@ -3461,7 +3464,6 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
     setSubmitting(true);
     setBody("");
-    setUnassignedConfirmed(false);
     try {
       if (workModeChanged && onWorkModeChange) {
         await onWorkModeChange(pendingWorkMode);
@@ -3757,8 +3759,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   aria-expanded={workModeMenuOpen}
                   title={
                     isPlanning
-                      ? "Planning mode is on for this submission. Click to change."
-                      : "Standard mode for this submission. Click to switch to planning."
+                      ? "Plan mode is on for this submission. Click to change."
+                      : "Agent mode for this submission. Click to switch to plan mode."
                   }
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
@@ -3772,7 +3774,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   ) : (
                     <Hammer className="h-3.5 w-3.5" aria-hidden />
                   )}
-                  <span>{isPlanning ? "Planning" : "Standard"}</span>
+                  <span>{isPlanning ? "Plan mode" : "Agent mode"}</span>
                   <ChevronDown className="h-3 w-3 opacity-60" aria-hidden />
                 </button>
               </PopoverTrigger>
@@ -3799,7 +3801,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   ) : (
                     <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
                   )}
-                  <span>{isPlanning ? "Switch to standard" : "Switch to planning"}</span>
+                  <span>{isPlanning ? "Switch to agent mode" : "Switch to plan mode"}</span>
                 </button>
               </PopoverContent>
             </Popover>
@@ -3808,6 +3810,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
         {enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
+            ref={reassignTriggerRef}
             value={reassignTarget}
             options={reassignOptions}
             placeholder="Assignee"
@@ -3849,6 +3852,45 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           {submitting ? "Posting..." : "Send"}
         </Button>
       </div>
+
+      {/* No-assignee warning modal (PAP-128 C): replaces the old press-Send-again toast. */}
+      <AlertDialog open={noAssigneeDialogOpen} onOpenChange={setNoAssigneeDialogOpen}>
+        <AlertDialogContent
+          data-testid="issue-chat-no-assignee-dialog"
+          onCloseAutoFocus={(event) => {
+            if (!focusAssigneeOnDialogCloseRef.current) return;
+            event.preventDefault();
+            focusAssigneeOnDialogCloseRef.current = false;
+            reassignTriggerRef.current?.focus();
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>No assignee selected</AlertDialogTitle>
+            <AlertDialogDescription>
+              This comment will be posted without an assignee, so no agent will be woken
+              to act on it. Go back to pick an assignee, or send anyway.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              data-testid="issue-chat-no-assignee-go-back"
+              onClick={() => {
+                focusAssigneeOnDialogCloseRef.current = true;
+              }}
+            >
+              Go back
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="issue-chat-no-assignee-send-anyway"
+              onClick={() => {
+                void submitComment();
+              }}
+            >
+              Send anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 });
