@@ -3256,8 +3256,8 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string) {
-    const run = await db
+  async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
+    const run = await dbOrTx
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
@@ -4867,55 +4867,57 @@ export function issueService(db: Db) {
       });
     },
 
-    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
-      await clearExecutionRunIfTerminal(id);
-      await clearCheckoutRunIfTerminal(id);
-      const existing = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
+    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
 
-      if (!existing) return null;
-      if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
-        throw conflict("Only assignee can release issue");
-      }
-      if (
-        actorAgentId &&
-        existing.status === "in_progress" &&
-        existing.assigneeAgentId === actorAgentId &&
-        existing.checkoutRunId &&
-        !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
-      ) {
-        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
-        if (!stale) {
-          throw conflict("Only checkout run can release issue", {
-            issueId: existing.id,
-            assigneeAgentId: existing.assigneeAgentId,
-            checkoutRunId: existing.checkoutRunId,
-            actorRunId: actorRunId ?? null,
-          });
+        if (!existing) return null;
+        if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+          throw conflict("Only assignee can release issue");
         }
-      }
+        if (
+          actorAgentId &&
+          existing.status === "in_progress" &&
+          existing.assigneeAgentId === actorAgentId &&
+          existing.checkoutRunId &&
+          !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
+        ) {
+          const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx);
+          if (!stale) {
+            throw conflict("Only checkout run can release issue", {
+              issueId: existing.id,
+              assigneeAgentId: existing.assigneeAgentId,
+              checkoutRunId: existing.checkoutRunId,
+              actorRunId: actorRunId ?? null,
+            });
+          }
+        }
 
-      const updated = await db
-        .update(issues)
-        .set({
-          status: "todo",
-          assigneeAgentId: null,
-          checkoutRunId: null,
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(issues.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!updated) return null;
-      const [enriched] = await withIssueLabels(db, [updated]);
-      return enriched;
-    },
+        const updated = await tx
+          .update(issues)
+          .set({
+            status: "todo",
+            assigneeAgentId: null,
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return enriched;
+      }),
 
     adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>
       db.transaction(async (tx) => {
