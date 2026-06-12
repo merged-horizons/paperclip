@@ -214,6 +214,7 @@ describe("PipelineSettings", () => {
       restoredFromRevisionNumber: 1,
     });
     vi.spyOn(pipelinesApi, "update").mockResolvedValue(makePipeline());
+    vi.spyOn(pipelinesApi, "getHealth").mockResolvedValue({ pipelineId: "pipeline-1", warnings: [], ok: true });
     vi.spyOn(agentsApi, "list").mockResolvedValue([
       { id: "agent-1", name: "QA Agent", role: "QA", status: "active" } as unknown as Agent,
     ]);
@@ -345,6 +346,34 @@ describe("PipelineSettings", () => {
 
     const editor = container.querySelector<HTMLTextAreaElement>('[aria-label="Stage instructions"]')!;
     expect(editor.value).toBe("Collect requests.");
+
+    flushSync(() => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("surfaces stage health warnings on the stage card and selected settings panel", async () => {
+    (pipelinesApi.getHealth as unknown as { mockResolvedValueOnce: (value: unknown) => void }).mockResolvedValueOnce({
+      pipelineId: "pipeline-1",
+      ok: false,
+      warnings: [
+        {
+          code: "stage_no_automation",
+          stageId: "stage-1",
+          stageKey: "intake",
+          stageName: "Intake",
+          message:
+            "Nothing runs here automatically — items will sit until a person moves them. Add an agent to run this step, or make it a review step if a person should decide.",
+        },
+      ],
+    });
+    const { container, root, queryClient } = renderSettings();
+    await flushQueries();
+
+    expect(container.querySelector('button[aria-label="Intake, 1 warning"]')).not.toBeNull();
+    expect(container.textContent).toContain("This step won't run yet");
+    expect(container.textContent).toContain("Nothing runs here automatically");
 
     flushSync(() => {
       root.unmount();

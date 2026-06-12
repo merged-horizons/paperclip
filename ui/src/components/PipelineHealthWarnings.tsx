@@ -1,5 +1,6 @@
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { PipelineHealthWarning } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
 
 /**
@@ -14,6 +15,22 @@ function warningCount(count: number) {
 
 /** Board-bar caps its list so a busy pipeline doesn't render a wall of warnings. */
 const BOARD_WARNING_CAP = 5;
+
+function WarningMessage({ warning }: { warning: PipelineHealthWarning }) {
+  return (
+    <>
+      {warning.message}
+      {warning.href ? (
+        <>
+          {" "}
+          <Link to={warning.href} className="font-medium underline underline-offset-2">
+            {warning.hrefLabel ?? "Open"}
+          </Link>
+        </>
+      ) : null}
+    </>
+  );
+}
 
 /**
  * Board-header bar: a single amber strip summarising every stage that won't run,
@@ -48,12 +65,14 @@ export function PipelineHealthBar({
         {shown.map((warning, index) => {
           const body = (
             <>
-              <span className="font-medium">{warning.stageName}:</span> {warning.message}
+              <span className="font-medium">{warning.stageName}:</span> <WarningMessage warning={warning} />
             </>
           );
           return (
             <li key={`${warning.stageId}-${warning.code}-${index}`} className="list-disc">
-              {onSelectStage ? (
+              {warning.href ? (
+                <span>{body}</span>
+              ) : onSelectStage ? (
                 <button
                   type="button"
                   aria-label={`Open ${warning.stageName} settings`}
@@ -113,7 +132,7 @@ export function StageHealthWarnings({
       <ul className="mt-1.5 space-y-1 pl-6">
         {warnings.map((warning, index) => (
           <li key={`${warning.code}-${index}`} className="list-disc">
-            {warning.message}
+            <WarningMessage warning={warning} />
           </li>
         ))}
       </ul>

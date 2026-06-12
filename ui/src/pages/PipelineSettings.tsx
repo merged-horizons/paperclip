@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { syncRoutineVariablesWithTemplate, type RoutineVariable } from "@paperclipai/shared";
+import { groupWarningsByStage, syncRoutineVariablesWithTemplate, type RoutineVariable } from "@paperclipai/shared";
 import {
   Activity as ActivityIcon,
   AlertTriangle,
@@ -587,6 +587,10 @@ export function PipelineSettings() {
     () => new Map((agentsQuery.data ?? []).map((agent) => [agent.id, agent])),
     [agentsQuery.data],
   );
+  const healthWarningsByStage = useMemo(
+    () => groupWarningsByStage(healthQuery.data?.warnings ?? []),
+    [healthQuery.data?.warnings],
+  );
 
   const stageEventsQuery = useQuery({
     queryKey: selectedCompanyId && pipelineId && selectedStage
@@ -677,6 +681,7 @@ export function PipelineSettings() {
     if (!pipelineId) return;
     await queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.detail(pipelineId) });
     await queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.intakeForm(pipelineId) });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.health(pipelineId) });
   };
 
   const saveStage = useMutation({
@@ -1077,41 +1082,57 @@ export function PipelineSettings() {
           ) : (
             <div className="overflow-x-auto border-y border-border py-4">
               <div className="flex min-w-max items-center gap-2">
-                {stages.map((stage, index) => (
-                  <div key={stage.id} className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      className={cn(
-                        "min-h-20 w-48 rounded-md border px-3 py-2 text-left text-sm transition-colors",
-                        selectedStage?.id === stage.id
-                          ? "border-foreground bg-accent/50"
-                          : "border-border hover:bg-accent/40",
-                      )}
-                      onClick={() => setSelectedStageId(stage.id)}
-                    >
-                      <span className="block font-semibold text-foreground">{stage.name}</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">Step {index + 1}</span>
-                      {stageNewEntriesDisabled(stage) ? (
-                        <span className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-300">
-                          <AlertTriangle className="h-3 w-3" />
-                          New entries paused
+                {stages.map((stage, index) => {
+                  const warningCount = healthWarningsByStage[stage.id]?.length ?? 0;
+                  return (
+                    <div key={stage.id} className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        aria-label={
+                          warningCount > 0
+                            ? `${stage.name}, ${warningCount} ${warningCount === 1 ? "warning" : "warnings"}`
+                            : stage.name
+                        }
+                        className={cn(
+                          "min-h-20 w-48 rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                          selectedStage?.id === stage.id
+                            ? "border-foreground bg-accent/50"
+                            : "border-border hover:bg-accent/40",
+                        )}
+                        onClick={() => setSelectedStageId(stage.id)}
+                      >
+                        <span className="flex items-start justify-between gap-2">
+                          <span className="min-w-0 flex-1 font-semibold text-foreground">{stage.name}</span>
+                          {warningCount > 0 ? (
+                            <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-amber-700 dark:text-amber-300">
+                              <AlertTriangle className="h-3.5 w-3.5" />
+                              {warningCount} {warningCount === 1 ? "warning" : "warnings"}
+                            </span>
+                          ) : null}
                         </span>
-                      ) : null}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Insert stage after ${stage.name}`}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-dashed border-border text-muted-foreground hover:border-foreground hover:text-foreground"
-                      onClick={() => addStage.mutate(stage)}
-                      disabled={addStage.isPending}
-                    >
-                      <Plus className="h-4 w-4" />
-                    </button>
-                    {index === stages.length - 1 ? null : (
-                      <span className="h-px w-8 bg-border" aria-hidden="true" />
-                    )}
-                  </div>
-                ))}
+                        <span className="mt-1 block text-xs text-muted-foreground">Step {index + 1}</span>
+                        {stageNewEntriesDisabled(stage) ? (
+                          <span className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                            <AlertTriangle className="h-3 w-3" />
+                            New entries paused
+                          </span>
+                        ) : null}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Insert stage after ${stage.name}`}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-dashed border-border text-muted-foreground hover:border-foreground hover:text-foreground"
+                        onClick={() => addStage.mutate(stage)}
+                        disabled={addStage.isPending}
+                      >
+                        <Plus className="h-4 w-4" />
+                      </button>
+                      {index === stages.length - 1 ? null : (
+                        <span className="h-px w-8 bg-border" aria-hidden="true" />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -1152,9 +1173,7 @@ export function PipelineSettings() {
 
                   <StageHealthWarnings
                     className="mb-4"
-                    warnings={(healthQuery.data?.warnings ?? []).filter(
-                      (warning) => warning.stageId === selectedStage.id,
-                    )}
+                    warnings={healthWarningsByStage[selectedStage.id] ?? []}
                   />
 
                   {activeStageSection === "overview" ? (

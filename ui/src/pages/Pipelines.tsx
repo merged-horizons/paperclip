@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { groupWarningsByStage } from "@paperclipai/shared";
 import { AlertTriangle, ArrowUpDown, BookOpenText, Check, ChevronDown, ChevronRight, ChevronUp, GitBranch, Hexagon, Info, List, ListTree, Loader2, MessageSquare, MoreHorizontal, Plus, Search, Settings, Trash2, X } from "lucide-react";
 import {
   DndContext,
@@ -1009,12 +1010,14 @@ function PipelineCaseCard({
 function PipelineBoardColumn({
   stage,
   cases,
+  warningCount,
   onColumnEmpty,
   isDragTargeted,
   isDragBlocked,
 }: {
   stage: PipelineStage;
   cases: BoardCase[];
+  warningCount?: number;
   onColumnEmpty?: (stage: PipelineStage) => string;
   isDragTargeted?: boolean;
   isDragBlocked?: boolean;
@@ -1030,8 +1033,16 @@ function PipelineBoardColumn({
       className={`flex min-w-[260px] max-w-[320px] shrink-0 flex-col rounded-md border border-border ${isBlockedDropTarget ? "ring-1 ring-red-500/45" : ""}`}
     >
       <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm font-semibold text-muted-foreground">
-        <span>{stage.name}</span>
-        <span>{cases.length}</span>
+        <span className="min-w-0 truncate">{stage.name}</span>
+        <span className="ml-2 flex shrink-0 items-center gap-2 text-xs">
+          <span>{cases.length} item{cases.length === 1 ? "" : "s"}</span>
+          {warningCount ? (
+            <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              {warningCount} warning{warningCount === 1 ? "" : "s"}
+            </span>
+          ) : null}
+        </span>
       </div>
       <div
         ref={setNodeRef}
@@ -1102,6 +1113,10 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     if (!pipeline?.stages) return [] as PipelineStage[];
     return [...pipeline.stages].sort((left, right) => left.position - right.position);
   }, [pipeline?.stages]);
+  const healthWarningsByStage = useMemo(
+    () => groupWarningsByStage(healthQuery.data?.warnings ?? []),
+    [healthQuery.data?.warnings],
+  );
 
   const stageIds = useMemo(() => new Set(orderedStages.map((stage) => stage.id)), [orderedStages]);
 
@@ -1333,6 +1348,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
                   key={stage.id}
                   stage={stage}
                   cases={items}
+                  warningCount={healthWarningsByStage[stage.id]?.length ?? 0}
                   isDragTargeted={isDragTargeted}
                   isDragBlocked={isDragBlocked}
                   onColumnEmpty={(columnStage) =>

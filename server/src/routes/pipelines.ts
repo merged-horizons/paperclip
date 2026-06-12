@@ -45,7 +45,12 @@ import {
 import { accessService } from "../services/access.js";
 import { issueService } from "../services/issues.js";
 import { assertCompanyAccess } from "./authz.js";
-import { computePipelineHealth, deriveCaseType, type PipelineHealthStageInput } from "@paperclipai/shared";
+import {
+  computePipelineHealth,
+  deriveCaseType,
+  type PipelineHealthFailedAutomationInput,
+  type PipelineHealthStageInput,
+} from "@paperclipai/shared";
 
 /** Per-stage instructions document keys look like `stage-instructions:{stageId}`. */
 const STAGE_INSTRUCTIONS_PREFIX = "stage-instructions:";
@@ -670,7 +675,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
   router.get("/pipelines/:pipelineId/health", async (req, res) => {
     const pipelineId = req.params.pipelineId as string;
     const companyId = await assertPipelineAccess(db, req, pipelineId);
-    const [pipeline, stages, instructionDocs, companyAgents, companyPipelines, companyStages] = await Promise.all([
+    const [pipeline, stages, instructionDocs, companyAgents, companyPipelines, companyStages, failedAutomationRows] = await Promise.all([
       db.select().from(pipelines)
         .where(and(eq(pipelines.id, pipelineId), eq(pipelines.companyId, companyId)))
         .then((rows) => rows[0] ?? null),
@@ -694,6 +699,25 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         .from(pipelineStages)
         .innerJoin(pipelines, eq(pipelineStages.pipelineId, pipelines.id))
         .where(eq(pipelines.companyId, companyId)),
+      db.select({
+        caseId: pipelineCases.id,
+        caseTitle: pipelineCases.title,
+        stageId: pipelineStages.id,
+        stageKey: pipelineStages.key,
+        stageName: pipelineStages.name,
+        error: pipelineAutomationExecutions.error,
+      })
+        .from(pipelineAutomationExecutions)
+        .innerJoin(pipelineCases, eq(pipelineAutomationExecutions.caseId, pipelineCases.id))
+        .innerJoin(pipelineStages, eq(pipelineCases.stageId, pipelineStages.id))
+        .where(and(
+          eq(pipelineAutomationExecutions.companyId, companyId),
+          eq(pipelineCases.pipelineId, pipelineId),
+          eq(pipelineAutomationExecutions.status, "failed"),
+          isNull(pipelineCases.terminalKind),
+        ))
+        .orderBy(desc(pipelineAutomationExecutions.updatedAt))
+        .limit(50),
     ]);
     if (!pipeline) throw notFound("Pipeline not found");
 
@@ -725,8 +749,16 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       config: (stage.config ?? null) as Record<string, unknown> | null,
       instructionsBody: bodyByStageId.get(stage.id) ?? "",
     }));
+    const failedAutomations: PipelineHealthFailedAutomationInput[] = failedAutomationRows.map((row) => ({
+      stageId: row.stageId,
+      stageKey: row.stageKey,
+      stageName: row.stageName,
+      caseId: row.caseId,
+      caseTitle: row.caseTitle,
+      error: row.error,
+    }));
 
-    res.json(computePipelineHealth({ pipelineId, stages: healthStages, agentsById, pipelinesById }));
+    res.json(computePipelineHealth({ pipelineId, stages: healthStages, agentsById, pipelinesById, failedAutomations }));
   });
 
   router.get("/pipelines/:pipelineId/intake-form", async (req, res) => {

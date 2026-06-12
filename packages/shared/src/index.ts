@@ -18,6 +18,7 @@ export {
   computePipelineHealth,
   groupWarningsByStage,
   type PipelineHealthAgentRef,
+  type PipelineHealthFailedAutomationInput,
   type PipelineHealthInput,
   type PipelineHealthPipelineRef,
   type PipelineHealthReport,

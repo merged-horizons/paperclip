@@ -21,6 +21,7 @@ import {
   GeneratedField,
   isGuardedTransitionAllowed,
   PipelineItemDetailView,
+  Pipelines,
   pipelineKeyFromName,
   PipelinesIndexTable,
   pipelinesHaveConnectionData,
@@ -35,9 +36,11 @@ const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
+const mockLocationPathname = vi.hoisted(() => ({ value: "/pipelines/pipeline-1/add" }));
 const mockPipelinesApi = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
+  getHealth: vi.fn(),
   getIntakeForm: vi.fn(),
   listCases: vi.fn(),
   getCase: vi.fn(),
@@ -64,7 +67,7 @@ vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
-  useLocation: () => ({ pathname: "/pipelines/pipeline-1/add" }),
+  useLocation: () => ({ pathname: mockLocationPathname.value }),
   useNavigate: () => mockNavigate,
   useParams: () => ({ pipelineId: "pipeline-1" }),
 }));
@@ -719,6 +722,82 @@ describe("pipeline board guard helpers", () => {
     expect(resolvePipelineTargetStageId("stage-a", columns, caseToColumn)).toBe("stage-a");
     expect(resolvePipelineTargetStageId("item-1", columns, caseToColumn)).toBe("stage-b");
     expect(resolvePipelineTargetStageId("missing", columns, caseToColumn)).toBeNull();
+  });
+});
+
+async function renderPipelineBoard() {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+
+  mockLocationPathname.value = "/pipelines/pipeline-1";
+  mockPipelinesApi.get.mockResolvedValue(pipeline);
+  mockPipelinesApi.listCases.mockResolvedValue([
+    {
+      case: {
+        id: "item-1",
+        companyId: "company-1",
+        pipelineId: "pipeline-1",
+        stageId: "stage-intake",
+        title: "Draft launch post",
+        fields: {},
+        terminalKind: null,
+      },
+      activeWork: null,
+    },
+  ]);
+  mockPipelinesApi.getHealth.mockResolvedValue({
+    pipelineId: "pipeline-1",
+    ok: false,
+    warnings: [
+      {
+        code: "stage_no_automation",
+        stageId: "stage-intake",
+        stageKey: "intake",
+        stageName: "Intake",
+        message:
+          "Nothing runs here automatically — items will sit until a person moves them. Add an agent to run this step, or make it a review step if a person should decide.",
+      },
+    ],
+  });
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <Pipelines />
+      </QueryClientProvider>,
+    );
+  });
+  for (let index = 0; index < 3; index += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  return { container, root, queryClient };
+}
+
+describe("PipelineBoard", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    mockLocationPathname.value = "/pipelines/pipeline-1/add";
+    vi.clearAllMocks();
+  });
+
+  it("shows rolled-up health warning counts in stage column headers", async () => {
+    const { container, root, queryClient } = await renderPipelineBoard();
+
+    expect(container.textContent).toContain("Some steps won't run yet");
+    expect(container.textContent).toContain("1 warning");
+    expect(container.textContent).toContain("1 item");
+
+    act(() => {
+      root.unmount();
+    });
+    queryClient.clear();
   });
 });
 

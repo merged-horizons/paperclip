@@ -82,6 +82,27 @@ describe("computePipelineHealth", () => {
     );
   });
 
+  it("warns loudly when a non-review stage has no automatic runner", () => {
+    const report = computePipelineHealth(baseInput([stage({ kind: "working", config: {}, instructionsBody: "" })]));
+    const warning = report.warnings.find((w) => w.code === "stage_no_automation");
+    expect(warning?.message).toBe(
+      "Nothing runs here automatically — items will sit until a person moves them. Add an agent to run this step, or make it a review step if a person should decide.",
+    );
+  });
+
+  it("warns when instructions exist without an assigned agent", () => {
+    const report = computePipelineHealth(baseInput([stage({ kind: "working", config: {}, instructionsBody: "Draft it." })]));
+    const warning = report.warnings.find((w) => w.code === "automation_no_agent");
+    expect(warning?.message).toBe(
+      "This step has instructions, but no agent is assigned. Add an agent to run this step, or make it a review step if a person should decide.",
+    );
+  });
+
+  it("does not warn about missing automation on review stages", () => {
+    const report = computePipelineHealth(baseInput([stage({ kind: "review", config: {}, instructionsBody: "" })]));
+    expect(report.warnings.map((warning) => warning.code)).not.toContain("stage_no_automation");
+  });
+
   it("warns when a review stage has no approver set", () => {
     const report = computePipelineHealth(
       baseInput([
@@ -136,7 +157,7 @@ describe("computePipelineHealth", () => {
   it("does not warn for a valid pipeline + stage reference", () => {
     const href = buildPipelineMentionHref("pipeline-2", "assets");
     const report = computePipelineHealth(
-      baseInput([stage({ instructionsBody: `Hand off to [Prod](${href}).` })]),
+      baseInput([stage({ config: { assigneeAgentId: AGENTS.active.id }, instructionsBody: `Hand off to [Prod](${href}).` })]),
     );
     expect(report.warnings).toEqual([]);
   });
@@ -162,11 +183,42 @@ describe("computePipelineHealth", () => {
     expect(report.warnings.filter((w) => w.code === "unset_required_variable")).toHaveLength(1);
   });
 
+  it("adds linked warnings for failed automation on live items", () => {
+    const report = computePipelineHealth(
+      baseInput([
+        stage({
+          id: "stage-2",
+          key: "drafting",
+          name: "Drafting",
+          kind: "working",
+          config: { onEnter: { type: "run_routine", routineId: "routine-1" } },
+        }),
+      ], {
+        failedAutomations: [
+          {
+            stageId: "stage-2",
+            stageKey: "drafting",
+            stageName: "Drafting",
+            caseId: "case-1",
+            caseTitle: "Launch post",
+            error: "boom",
+          },
+        ],
+      }),
+    );
+    const warning = report.warnings.find((w) => w.code === "automation_failed");
+    expect(warning).toMatchObject({
+      message: 'Automation failed on "Launch post". Open the item to inspect the log and retry it.',
+      href: "/pipelines/pipeline-1/items/case-1",
+      hrefLabel: "Open item",
+    });
+  });
+
   it("accepts the legacy { key } variable shape", () => {
     const report = computePipelineHealth(
       baseInput([
         stage({
-          config: { onEnter: { type: "run_routine" }, variables: [{ key: "topic", required: true }] },
+          config: { onEnter: { type: "run_routine", routineId: "routine-1" }, variables: [{ key: "topic", required: true }] },
           instructionsBody: "Go.",
         }),
       ]),
@@ -186,7 +238,7 @@ describe("computePipelineHealth", () => {
         }),
       ]),
     );
-    expect(report.warnings).toEqual([]);
+    expect(report.warnings.map((warning) => warning.code)).not.toContain("unset_required_variable");
   });
 
   it("groups warnings by stage", () => {

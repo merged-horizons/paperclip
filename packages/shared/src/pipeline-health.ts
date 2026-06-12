@@ -16,7 +16,10 @@ import { extractPipelineMentions } from "./project-mentions.js";
 
 export type PipelineHealthWarningCode =
   | "paused_agent"
+  | "stage_no_automation"
   | "automation_no_instructions"
+  | "automation_no_agent"
+  | "automation_failed"
   | "review_no_approver"
   | "missing_pipeline_reference"
   | "missing_stage_reference"
@@ -31,6 +34,9 @@ export interface PipelineHealthWarning {
   stageName: string;
   /** Plain-language, prosumer-safe message ready to render as-is. */
   message: string;
+  /** Optional UI route for the next useful place to inspect or fix the warning. */
+  href?: string;
+  hrefLabel?: string;
 }
 
 export interface PipelineHealthReport {
@@ -67,6 +73,15 @@ export interface PipelineHealthStageInput {
   instructionsBody?: string | null;
 }
 
+export interface PipelineHealthFailedAutomationInput {
+  stageId: string;
+  stageKey: string;
+  stageName: string;
+  caseId: string;
+  caseTitle: string;
+  error?: string | null;
+}
+
 export interface PipelineHealthInput {
   pipelineId: string;
   stages: PipelineHealthStageInput[];
@@ -74,6 +89,8 @@ export interface PipelineHealthInput {
   agentsById: Record<string, PipelineHealthAgentRef>;
   /** Every pipeline in the company, keyed by id, for validating `/pipeline:` references. */
   pipelinesById: Record<string, PipelineHealthPipelineRef>;
+  /** Failed stage automation still affecting live items in this pipeline. */
+  failedAutomations?: PipelineHealthFailedAutomationInput[];
 }
 
 type StageConfig = {
@@ -94,7 +111,14 @@ function agentLabel(agent: PipelineHealthAgentRef | undefined): string {
   return name && name.length > 0 ? name : "a teammate";
 }
 
-/** A stage "runs instructions" when it has both an assigned teammate and an instructions body. */
+/** True when stage entry has a saved automation that can attempt to run. */
+function hasRunnableStageAutomation(config: StageConfig): boolean {
+  const onEnter = config.onEnter;
+  if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return false;
+  const record = onEnter as Record<string, unknown>;
+  return record.type === "run_routine" && typeof record.routineId === "string" && record.routineId.trim().length > 0;
+}
+
 function readVariableName(entry: Record<string, unknown>): string | null {
   const name = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : null;
   if (name) return name;
@@ -130,6 +154,7 @@ export function computePipelineHealth(input: PipelineHealthInput): PipelineHealt
       typeof config.assigneeAgentId === "string" && config.assigneeAgentId.trim()
         ? config.assigneeAgentId.trim()
         : null;
+    const hasStageAutomation = hasRunnableStageAutomation(config);
 
     // 1. A teammate is assigned to run this step, but they're paused / gone.
     if (assigneeAgentId) {
@@ -158,7 +183,25 @@ export function computePipelineHealth(input: PipelineHealthInput): PipelineHealt
       });
     }
 
-    // 3. A review step with no one who can actually approve.
+    // 3. Instructions exist, but no teammate is assigned to run them.
+    if (!assigneeAgentId && instructionsBody && stage.kind !== "review") {
+      warnings.push({
+        ...anchor,
+        code: "automation_no_agent",
+        message: `This step has instructions, but no agent is assigned. Add an agent to run this step, or make it a review step if a person should decide.`,
+      });
+    }
+
+    // 4. Nothing runs here automatically. This is legal, but must be loud.
+    if (!assigneeAgentId && !instructionsBody && !hasStageAutomation && stage.kind !== "review") {
+      warnings.push({
+        ...anchor,
+        code: "stage_no_automation",
+        message: `Nothing runs here automatically — items will sit until a person moves them. Add an agent to run this step, or make it a review step if a person should decide.`,
+      });
+    }
+
+    // 5. A review step with no one who can actually approve.
     if (stage.kind === "review" || config.requireApproval === true) {
       const approver = config.approver && typeof config.approver === "object" ? config.approver : null;
       const kind = approver && typeof approver.kind === "string" ? approver.kind : "any_human";
@@ -188,7 +231,7 @@ export function computePipelineHealth(input: PipelineHealthInput): PipelineHealt
       }
     }
 
-    // 4. Instructions that hand off to a pipeline / step that no longer exists.
+    // 6. Instructions that hand off to a pipeline / step that no longer exists.
     if (instructionsBody) {
       for (const mention of extractPipelineMentions(instructionsBody)) {
         const target = input.pipelinesById[mention.pipelineId];
@@ -210,12 +253,12 @@ export function computePipelineHealth(input: PipelineHealthInput): PipelineHealt
       }
     }
 
-    // 5. Required details that were never filled in, so the step can't run.
+    // 7. Required details that were never filled in, so the step can't run.
     // Only stages that actually run instructions (an assigned teammate or an
     // on-enter automation) need values up front — on entry stages the same
     // variables are the intake form, filled per item, so an empty default is
     // the normal state, not a misconfiguration.
-    const runsInstructions = assigneeAgentId !== null || config.onEnter != null;
+    const runsInstructions = assigneeAgentId !== null || hasStageAutomation;
     const variables = runsInstructions && Array.isArray(config.variables) ? config.variables : [];
     for (const raw of variables) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
@@ -230,6 +273,18 @@ export function computePipelineHealth(input: PipelineHealthInput): PipelineHealt
         });
       }
     }
+  }
+
+  for (const failure of input.failedAutomations ?? []) {
+    warnings.push({
+      code: "automation_failed",
+      stageId: failure.stageId,
+      stageKey: failure.stageKey,
+      stageName: failure.stageName,
+      message: `Automation failed on "${failure.caseTitle}". Open the item to inspect the log and retry it.`,
+      href: `/pipelines/${input.pipelineId}/items/${failure.caseId}`,
+      hrefLabel: "Open item",
+    });
   }
 
   return { pipelineId: input.pipelineId, warnings, ok: warnings.length === 0 };
