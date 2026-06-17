@@ -115,6 +115,9 @@ export const BreakdownIncomplete: Story = {
   },
 };
 
+// The server still sends the implementation-flavored `message` here, but the
+// banner translates `no_action_path` into prosumer copy (PAP-11259), so the
+// rendered body is the friendly version regardless of this raw message.
 export const StuckNoActionPath: Story = {
   args: {
     onRetry: () => {},

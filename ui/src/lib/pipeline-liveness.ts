@@ -43,6 +43,16 @@ const AUTO_RETRY_NOTE =
   "Paperclip retries automatically once the blocker clears — you don't need to move the item by hand.";
 
 /**
+ * Prosumer-voice body for the `no_action_path` "stuck" banner. The server's
+ * raw `liveness.message` ("No lease, linked work, blocker, automation retry,
+ * review, or breakdown action path is visible.") leaks implementation vocabulary
+ * the PAP-11245 voice rule forbids, so we translate it here. See PAP-11259.
+ */
+const NO_ACTION_PATH_BODY =
+  "Paperclip can't see anything to work on next here — no automation, retry, blocker, or review. " +
+  "Re-run the stage to nudge it, or use the ⋯ menu to move it by hand.";
+
+/**
  * The `pipelines:write` permission key is the only permission the Phase 2
  * preflight blocks on today. The fingerprint encodes it as the final two
  * colon-separated segments (`...:pipelines:write`).
@@ -194,7 +204,7 @@ export function derivePipelineLivenessBanner(
         reason: liveness.reason,
         tone: "attention",
         title: "This item is stuck",
-        body: liveness.message,
+        body: NO_ACTION_PATH_BODY,
         blockerLink: null,
         automationLink: null,
         permissionKey: null,

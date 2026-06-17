@@ -113,6 +113,18 @@ describe("derivePipelineLivenessBanner", () => {
     expect(view!.showRetry).toBe(true);
     expect(view!.retryKind).toBe("stage");
   });
+
+  it("uses prosumer copy for no_action_path, never the raw server vocabulary (PAP-11259)", () => {
+    const view = derivePipelineLivenessBanner(
+      liveness({
+        reason: "no_action_path",
+        message: "No lease, linked work, blocker, automation retry, review, or breakdown action path is visible.",
+      }),
+    );
+    expect(view!.title).toBe("This item is stuck");
+    expect(view!.body).not.toMatch(/lease|linked work|action path/i);
+    expect(view!.body).toMatch(/Re-run the stage/);
+  });
 });
 
 describe("shouldDisableRerunForPermission", () => {
