@@ -125,6 +125,30 @@ function makePipeline(): PipelineDetail {
   };
 }
 
+function makeBreakdownPipeline(): PipelineDetail {
+  const pipeline = makePipeline();
+  pipeline.stages = pipeline.stages.map((stage) =>
+    stage.id === "stage-1"
+      ? {
+          ...stage,
+          config: {
+            ...stage.config,
+            breakdown: {
+              targetPipelineId: "pipeline-2",
+              targetStageKey: "incoming",
+              pieceNoun: "task",
+              inheritFields: ["release"],
+              advanceTo: "review",
+              waitForPieces: false,
+              whenFinishedMoveTo: null,
+            },
+          },
+        }
+      : stage,
+  );
+  return pipeline;
+}
+
 function renderSettings() {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -657,6 +681,81 @@ describe("PipelineSettings", () => {
     expect(container.querySelector('button[aria-label="Insert stage after Intake"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="Insert stage after Covered"]')).toBeNull();
     expect(container.querySelector('button[aria-label="Insert stage after Cancelled"]')).toBeNull();
+
+    flushSync(() => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("shows the carry-over source pipeline, intake stage, and a link to edit those fields", async () => {
+    vi.mocked(pipelinesApi.get).mockResolvedValue(makeBreakdownPipeline());
+
+    const { container, root, queryClient } = renderSettings();
+    await flushQueries();
+
+    flushSync(() => {
+      findButton(container, "Automation")!.click();
+    });
+    await flushQueries();
+
+    const carryOverRow = Array.from(container.querySelectorAll("div")).find(
+      (node) => node.textContent?.includes("Fields come from") && node.textContent?.includes("Edit these fields"),
+    );
+    expect(carryOverRow).toBeTruthy();
+    expect(carryOverRow!.textContent).toContain("Piece pipeline");
+    expect(carryOverRow!.textContent).toContain("Incoming");
+
+    const editLink = Array.from(container.querySelectorAll("a")).find((anchor) =>
+      anchor.textContent?.includes("Edit these fields"),
+    ) as HTMLAnchorElement | undefined;
+    expect(editLink?.getAttribute("href")).toBe("/pipelines/pipeline-2?stage=piece-stage-1");
+    // The picker still lists the destination's intake fields by their keys.
+    expect(container.textContent).toContain("Release");
+
+    flushSync(() => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("explains inline when the carry-over source pipeline is archived", async () => {
+    vi.mocked(pipelinesApi.get).mockResolvedValue(makeBreakdownPipeline());
+    vi.mocked(pipelinesApi.list).mockResolvedValue([
+      makePipeline(),
+      {
+        ...makePipeline(),
+        id: "pipeline-2",
+        key: "piece_pipeline",
+        name: "Piece pipeline",
+        archivedAt: "2026-06-10T00:00:00.000Z",
+        stages: [
+          {
+            id: "piece-stage-1",
+            pipelineId: "pipeline-2",
+            key: "incoming",
+            name: "Incoming",
+            kind: "working",
+            position: 100,
+            config: {
+              variables: [{ key: "release", label: "Release", type: "text", options: [], required: true }],
+            },
+          },
+        ],
+      },
+    ]);
+
+    const { container, root, queryClient } = renderSettings();
+    await flushQueries();
+
+    flushSync(() => {
+      findButton(container, "Automation")!.click();
+    });
+    await flushQueries();
+
+    expect(container.textContent).toContain(
+      "This pipeline is archived, so its intake fields can't be edited until it's restored.",
+    );
 
     flushSync(() => {
       root.unmount();

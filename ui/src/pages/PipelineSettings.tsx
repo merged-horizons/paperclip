@@ -10,6 +10,7 @@ import {
   Activity as ActivityIcon,
   AlertTriangle,
   Archive,
+  ArrowUpRight,
   BadgeCheck,
   Ban,
   Check,
@@ -1143,6 +1144,15 @@ export function PipelineSettings() {
   );
   const breakdownEntryStage = breakdownTargetStages.find((stage) => stage.key === breakdownTargetStageKey) ?? null;
   const breakdownInheritFieldOptions = breakdownTargetIntakeQuery.data?.fields ?? [];
+  // Carry-over fields come from the destination pipeline's intake stage. Surface
+  // that source (and a link to edit it there) so this picker isn't a dead end.
+  const breakdownIntakeStageName =
+    breakdownTargetIntakeQuery.data?.stageName ?? breakdownEntryStage?.name ?? null;
+  const breakdownIntakeStageId = breakdownTargetIntakeQuery.data?.stageId ?? null;
+  const breakdownTargetArchived = Boolean(breakdownTargetPipeline?.archivedAt);
+  const breakdownIntakeSettingsHref = breakdownTargetPipelineId
+    ? `/pipelines/${breakdownTargetPipelineId}${breakdownIntakeStageId ? `?stage=${breakdownIntakeStageId}` : ""}`
+    : null;
   const breakdownPieceNounPlural = pieceNounPlural(breakdownPieceNoun);
   const stageKeyToName = new Map(stages.map((stage) => [stage.key, stage.name]));
   const breakdownCopyNames: BreakdownCopyNames = {
@@ -1243,6 +1253,37 @@ export function PipelineSettings() {
           </FieldRow>
           <FieldRow label="Carry over">
             <div className="space-y-2">
+              {breakdownTargetPipelineId ? (
+                <div className="space-y-1 rounded-md border border-dashed border-border bg-muted/30 px-3 py-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                    <span>Fields come from</span>
+                    <span className="font-medium text-foreground">
+                      {breakdownTargetPipeline?.name ?? "the destination pipeline"}
+                    </span>
+                    {breakdownIntakeStageName ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span className="font-medium text-foreground">{breakdownIntakeStageName}</span>
+                      </>
+                    ) : null}
+                  </div>
+                  {breakdownIntakeSettingsHref ? (
+                    <Link
+                      to={breakdownIntakeSettingsHref}
+                      className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                    >
+                      Edit these fields
+                      <ArrowUpRight className="h-3 w-3" />
+                    </Link>
+                  ) : null}
+                  {breakdownTargetArchived ? (
+                    <p className="flex items-center gap-1 text-amber-700 dark:text-amber-300">
+                      <Archive className="h-3 w-3 shrink-0" />
+                      This pipeline is archived, so its intake fields can't be edited until it's restored.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               {breakdownInheritFieldOptions.length > 0 ? (
                 <div className="space-y-1.5">
                   {breakdownInheritFieldOptions.map((field) => {
