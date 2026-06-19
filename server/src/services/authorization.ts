@@ -904,6 +904,7 @@ export function authorizationService(db: Db) {
         eq(issueComments.companyId, input.companyId),
         eq(issueComments.issueId, input.issueId),
         isNull(issueComments.deletedAt),
+        sql`${issueComments.body} LIKE ${"%agent://" + input.actorAgentId + "%"}`,
       ));
 
     const mentionRows = rows.filter((row) => extractAgentMentionIds(row.body).includes(input.actorAgentId));
