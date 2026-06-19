@@ -275,4 +275,3 @@ manifest.
         /         \
    ~~~ ribbit ~~~  skills! ~~~
 ```
-
