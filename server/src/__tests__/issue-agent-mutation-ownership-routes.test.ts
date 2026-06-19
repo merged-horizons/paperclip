@@ -23,6 +23,7 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
   listAttachments: vi.fn(),
+  listComments: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
   removeAttachment: vi.fn(),
@@ -67,6 +68,7 @@ const mockStorageService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(async () => []),
   listForIssue: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -378,7 +380,16 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockIssueService.list.mockReset();
     mockIssueService.listAttachments.mockReset();
+    mockIssueService.listComments.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockReset();
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
+    mockIssueThreadInteractionService.expireStaleRequestConfirmationsForIssueDocument.mockReset();
+    mockIssueThreadInteractionService.expireStaleRequestConfirmationsForIssueDocument.mockResolvedValue([]);
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockReset();
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
+    mockIssueThreadInteractionService.listForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueRecoveryActionService.listActiveForIssues.mockReset();
@@ -533,6 +544,14 @@ describe("agent issue mutation checkout ownership", () => {
       body: "comment",
     });
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-1",
+        issueId,
+        companyId,
+        body: "Mentioned reply context.",
+      },
+    ]);
     mockIssueService.remove.mockResolvedValue(makeIssue({ status: "cancelled" }));
     mockIssueService.getAttachmentById.mockResolvedValue({
       id: "attachment-1",
@@ -734,6 +753,52 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+  });
+
+  it("rejects peer agents from listing interactions when issue read is outside their boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .get(`/api/issues/${issueId}/interactions`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+    expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
+  });
+
+  it("allows mentioned peer agents to list comments through an issue read grant", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:read" ? "allow_issue_mention_grant" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:read"
+          ? "Allowed by a mention-scoped issue comment grant."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .get(`/api/issues/${issueId}/comments`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({
+        id: "comment-1",
+        body: "Mentioned reply context.",
+      }),
+    ]);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+    expect(mockIssueService.listComments).toHaveBeenCalledWith(issueId, {
+      afterCommentId: null,
+      order: "desc",
+      limit: null,
+    });
   });
 
   it("keeps true issue mutations denied for mentioned peer agents", async () => {

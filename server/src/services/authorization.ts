@@ -771,6 +771,7 @@ export function authorizationService(db: Db) {
           action: input.action,
           companyId: boundary.companyId,
           issueId: input.resource.issueId,
+          issueAssigneeAgentId: input.resource.assigneeAgentId,
           actorAgentId: input.actorAgentId,
         })
       ) {
@@ -869,15 +870,14 @@ export function authorizationService(db: Db) {
 
   async function commentAuthorCanGrantIssueMention(input: {
     companyId: string;
-    issueId: string;
     mentionedAgentId: string;
+    issueAssigneeAgentId: string | null;
     authorAgentId: string | null;
     authorUserId: string | null;
   }) {
     if (input.authorAgentId) {
       if (input.authorAgentId === input.mentionedAgentId) return false;
-      const issue = await loadIssue(input.issueId);
-      return issue?.companyId === input.companyId && issue.assigneeAgentId === input.authorAgentId;
+      return input.issueAssigneeAgentId === input.authorAgentId;
     }
     if (input.authorUserId) {
       return Boolean(await getActiveMembership(input.companyId, "user", input.authorUserId));
@@ -889,6 +889,7 @@ export function authorizationService(db: Db) {
     action: AuthorizationAction;
     companyId: string;
     issueId: string;
+    issueAssigneeAgentId: string | null;
     actorAgentId: string;
   }) {
     const rows = await db
@@ -909,8 +910,8 @@ export function authorizationService(db: Db) {
       if (!extractAgentMentionIds(row.body).includes(input.actorAgentId)) continue;
       const authorCanGrant = await commentAuthorCanGrantIssueMention({
         companyId: input.companyId,
-        issueId: input.issueId,
         mentionedAgentId: input.actorAgentId,
+        issueAssigneeAgentId: input.issueAssigneeAgentId,
         authorAgentId: row.authorAgentId,
         authorUserId: row.authorUserId,
       });
@@ -1268,6 +1269,7 @@ export function authorizationService(db: Db) {
           action: input.action,
           companyId,
           issueId: resource.issueId,
+          issueAssigneeAgentId: resource.assigneeAgentId,
           actorAgentId,
         })
       ) {
