@@ -1,4 +1,5 @@
 import type { AdapterRuntimeCredentialFile, AdapterRuntimeCredentialMaterialization } from "@paperclipai/adapter-utils/execution-target";
+import { normalizeAdapterRuntimeCredentialMaterialization } from "@paperclipai/adapter-utils/execution-target";
 import type { Db } from "@paperclipai/db";
 import type { SubscriptionCredentialKind } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
@@ -35,6 +36,15 @@ export interface ByoSubscriptionCredentialStore {
     issueId?: string | null;
     heartbeatRunId?: string | null;
   }): Promise<ByoSubscriptionCredentialMaterial | null>;
+  writeBackFromRuntime?(input: {
+    companyId: string;
+    userId: string;
+    provider: ByoSubscriptionCredentialProvider;
+    material: ByoSubscriptionCredentialMaterial;
+    agentId?: string | null;
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+  }): Promise<void>;
 }
 
 function materialKindFromStoredCredential(
@@ -81,6 +91,22 @@ export function createSubscriptionCredentialRuntimeStore(db: Db): ByoSubscriptio
           return null;
         }
         throw err;
+      }
+    },
+    async writeBackFromRuntime(input) {
+      if (input.material.provider !== input.provider) return;
+      switch (input.material.kind) {
+        case "auth_json":
+          await credentials.updateMaterialFromRuntime(
+            input.companyId,
+            input.userId,
+            input.provider,
+            input.material.value,
+          );
+          break;
+        case "oauth_token":
+        case "credentials_json":
+          break;
       }
     },
   };
@@ -137,6 +163,28 @@ export function buildByoSubscriptionRuntimeCredentialMaterialization(
   }
 }
 
+export function byoSubscriptionCredentialMaterialFromRuntimeUpdate(
+  provider: ByoSubscriptionCredentialProvider,
+  update: AdapterRuntimeCredentialMaterialization | null | undefined,
+): ByoSubscriptionCredentialMaterial | null {
+  const normalized = normalizeAdapterRuntimeCredentialMaterialization(update);
+  if (!normalized || normalized.provider !== provider) return null;
+
+  if (provider === "codex") {
+    const authJson = normalized.assets?.home?.files.find(
+      (file) => file.relativePath === "auth.json" && typeof file.contents === "string",
+    );
+    if (!authJson) return null;
+    return {
+      provider: "codex",
+      kind: "auth_json",
+      value: authJson.contents,
+    };
+  }
+
+  return null;
+}
+
 export async function resolveByoSubscriptionRuntimeCredentialMaterialization(input: {
   store?: ByoSubscriptionCredentialStore | null;
   companyId: string;
@@ -159,4 +207,32 @@ export async function resolveByoSubscriptionRuntimeCredentialMaterialization(inp
   if (!material || material.provider !== input.provider) return null;
 
   return buildByoSubscriptionRuntimeCredentialMaterialization(material);
+}
+
+export async function writeBackByoSubscriptionRuntimeCredentialMaterialization(input: {
+  store?: ByoSubscriptionCredentialStore | null;
+  companyId: string;
+  userId?: string | null;
+  provider: ByoSubscriptionCredentialProvider | null;
+  runtimeCredentialUpdates?: AdapterRuntimeCredentialMaterialization | null;
+  agentId?: string | null;
+  issueId?: string | null;
+  heartbeatRunId?: string | null;
+}): Promise<boolean> {
+  if (!input.store?.writeBackFromRuntime || !input.provider || !input.userId) return false;
+  const material = byoSubscriptionCredentialMaterialFromRuntimeUpdate(
+    input.provider,
+    input.runtimeCredentialUpdates,
+  );
+  if (!material) return false;
+  await input.store.writeBackFromRuntime({
+    companyId: input.companyId,
+    userId: input.userId,
+    provider: input.provider,
+    material,
+    agentId: input.agentId ?? null,
+    issueId: input.issueId ?? null,
+    heartbeatRunId: input.heartbeatRunId ?? null,
+  });
+  return true;
 }

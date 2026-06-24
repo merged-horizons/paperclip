@@ -8,6 +8,7 @@ import {
   adapterExecutionTargetToRemoteSpec,
   materializeAdapterRuntimeCredentialAsset,
   normalizeAdapterRuntimeCredentialMaterialization,
+  readAdapterExecutionTargetTextFile,
   type AdapterExecutionTarget,
 } from "./execution-target.js";
 import { buildInvocationEnvForLogs } from "./server-utils.js";
@@ -166,5 +167,34 @@ describe("runtime credential materialization", () => {
         },
       },
     });
+  });
+
+  it("reads bounded local execution-target text files without logging credentials", async () => {
+    const baseDir = await makeTempDir("paperclip-runtime-credential-read-");
+    const credentialFile = path.join(baseDir, "auth.json");
+    await fs.writeFile(credentialFile, '{"refresh_token":"rotated"}', "utf8");
+
+    await expect(
+      readAdapterExecutionTargetTextFile("run-1", null, credentialFile, {
+        cwd: baseDir,
+        env: {},
+        maxBytes: 128,
+      }),
+    ).resolves.toBe('{"refresh_token":"rotated"}');
+
+    await expect(
+      readAdapterExecutionTargetTextFile("run-1", null, path.join(baseDir, "missing.json"), {
+        cwd: baseDir,
+        env: {},
+      }),
+    ).resolves.toBeNull();
+
+    await expect(
+      readAdapterExecutionTargetTextFile("run-1", null, credentialFile, {
+        cwd: baseDir,
+        env: {},
+        maxBytes: 4,
+      }),
+    ).rejects.toThrow(/Refusing to read/);
   });
 });

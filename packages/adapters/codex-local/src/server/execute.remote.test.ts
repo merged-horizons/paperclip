@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,7 @@ const {
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  readAdapterExecutionTargetTextFile,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async () => ({
     exitCode: 1,
@@ -34,6 +35,7 @@ const {
     },
     stop: async () => {},
   })),
+  readAdapterExecutionTargetTextFile: vi.fn<(...args: unknown[]) => Promise<string | null>>(async () => null),
 }));
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -67,6 +69,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   return {
     ...actual,
     startAdapterExecutionTargetPaperclipBridge,
+    readAdapterExecutionTargetTextFile,
   };
 });
 
@@ -77,6 +80,8 @@ describe("codex remote execution", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    readAdapterExecutionTargetTextFile.mockResolvedValue(null);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -418,5 +423,183 @@ describe("codex remote execution", () => {
     ]);
     expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/codex/home`);
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
+  });
+
+  it("returns refreshed Codex subscription auth.json after a remote run", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-auth-refresh-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-auth-refresh/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), '{"refresh_token":"host"}', "utf8");
+    readAdapterExecutionTargetTextFile.mockResolvedValue('{"refresh_token":"rotated"}');
+
+    const result = await execute({
+      runId: "run-auth-refresh",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/remote/workspace",
+        runtimeCredentialMaterialization: {
+          provider: "codex",
+          assets: {
+            home: {
+              files: [
+                {
+                  relativePath: "auth.json",
+                  contents: '{"refresh_token":"stored"}',
+                },
+              ],
+            },
+          },
+        },
+        spec: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(readAdapterExecutionTargetTextFile).toHaveBeenCalledWith(
+      "run-auth-refresh",
+      expect.objectContaining({ kind: "remote", transport: "ssh" }),
+      `${managedRemoteWorkspace}/.paperclip-runtime/codex/home/auth.json`,
+      expect.objectContaining({
+        maxBytes: 32_768,
+      }),
+    );
+    expect(result.runtimeCredentialUpdates).toEqual({
+      provider: "codex",
+      assets: {
+        home: {
+          files: [
+            {
+              relativePath: "auth.json",
+              contents: '{"refresh_token":"rotated"}',
+              mode: 0o600,
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("does not let subscription auth material override explicit API-key mode", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-api-key-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const paperclipHome = path.join(rootDir, "paperclip-home");
+    const sharedCodexHome = path.join(rootDir, "shared-codex-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(sharedCodexHome, { recursive: true });
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    vi.stubEnv("CODEX_HOME", sharedCodexHome);
+
+    const result = await execute({
+      runId: "run-api-key",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          OPENAI_API_KEY: "sk-test",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/remote/workspace",
+        runtimeCredentialMaterialization: {
+          provider: "codex",
+          assets: {
+            home: {
+              files: [
+                {
+                  relativePath: "auth.json",
+                  contents: '{"refresh_token":"subscription"}',
+                },
+              ],
+            },
+          },
+        },
+        spec: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(readAdapterExecutionTargetTextFile).not.toHaveBeenCalled();
+    expect(result.runtimeCredentialUpdates).toBeUndefined();
+    await expect(readFile(path.join(managedCodexHome, "auth.json"), "utf8")).resolves.toBe(
+      '{"OPENAI_API_KEY":"sk-test"}',
+    );
   });
 });

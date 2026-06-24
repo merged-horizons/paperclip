@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import {
   normalizeAdapterRuntimeCredentialMaterialization,
@@ -775,6 +776,64 @@ export async function ensureAdapterExecutionTargetFile(
     `mkdir -p ${shellQuote(path.posix.dirname(filePath))} && : > ${shellQuote(filePath)}`,
     options,
   );
+}
+
+export async function readAdapterExecutionTargetTextFile(
+  runId: string,
+  target: AdapterExecutionTarget | null | undefined,
+  filePath: string,
+  options: AdapterExecutionTargetShellOptions & { maxBytes?: number | null },
+): Promise<string | null> {
+  const maxBytes =
+    typeof options.maxBytes === "number" && Number.isFinite(options.maxBytes) && options.maxBytes > 0
+      ? Math.floor(options.maxBytes)
+      : 1024 * 1024;
+
+  if (!target || target.kind === "local") {
+    try {
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) return null;
+      if (stat.size > maxBytes) {
+        throw new Error(`Refusing to read ${filePath}: file is ${stat.size} bytes, limit is ${maxBytes}.`);
+      }
+      return await fs.readFile(filePath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+  }
+
+  const quoted = shellQuote(filePath);
+  const result = await runAdapterExecutionTargetShellCommand(
+    runId,
+    target,
+    `[ -f ${quoted} ] || exit 66; size=$(wc -c < ${quoted} | tr -d '[:space:]'); ` +
+      `if [ "$size" -gt ${maxBytes} ]; then exit 67; fi; base64 < ${quoted}`,
+    {
+      cwd: target.remoteCwd,
+      env: options.env,
+      timeoutSec: options.timeoutSec,
+      graceSec: options.graceSec,
+      // Do not stream credential contents into adapter logs.
+      onLog: async () => {},
+    },
+  );
+  if (result.timedOut) {
+    throw new Error(`Timed out reading ${filePath} from ${describeAdapterExecutionTarget(target)}.`);
+  }
+  if (result.exitCode === 66) return null;
+  if (result.exitCode === 67) {
+    throw new Error(`Refusing to read ${filePath}: file exceeds ${maxBytes} bytes.`);
+  }
+  if ((result.exitCode ?? 0) !== 0) {
+    const detail = result.stderr.trim();
+    throw new Error(
+      `Failed to read ${filePath} from ${describeAdapterExecutionTarget(target)}${
+        detail ? `: ${detail}` : ""
+      }`,
+    );
+  }
+  return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8");
 }
 
 /**

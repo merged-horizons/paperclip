@@ -4,6 +4,7 @@
 
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
+import type { AdapterRuntimeCredentialMaterialization } from "./runtime-credentials.js";
 
 export interface AdapterAgent {
   id: string;
@@ -88,6 +89,12 @@ export interface AdapterExecutionResult {
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
+  /**
+   * Refreshed runtime credential material that core should persist through the
+   * credential store. This field is consumed before run result persistence and
+   * must never be copied into logs, run metadata, or issue comments.
+   */
+  runtimeCredentialUpdates?: AdapterRuntimeCredentialMaterialization | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;

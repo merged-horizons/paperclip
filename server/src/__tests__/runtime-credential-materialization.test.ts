@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildByoSubscriptionRuntimeCredentialMaterialization,
+  byoSubscriptionCredentialMaterialFromRuntimeUpdate,
   byoSubscriptionCredentialMaterialFromDecrypted,
   providerForSubscriptionCredentialAdapter,
   resolveByoSubscriptionRuntimeCredentialMaterialization,
+  writeBackByoSubscriptionRuntimeCredentialMaterialization,
   type ByoSubscriptionCredentialStore,
 } from "../services/runtime-credential-materialization.js";
 
@@ -186,5 +188,99 @@ describe("runtime credential materialization service", () => {
     expect(providerForSubscriptionCredentialAdapter("claude_local")).toBe("claude");
     expect(providerForSubscriptionCredentialAdapter("codex_local")).toBe("codex");
     expect(providerForSubscriptionCredentialAdapter("gemini_local")).toBeNull();
+  });
+
+  it("extracts Codex auth.json runtime updates without accepting other material", () => {
+    expect(
+      byoSubscriptionCredentialMaterialFromRuntimeUpdate("codex", {
+        provider: "codex",
+        assets: {
+          home: {
+            files: [
+              {
+                relativePath: "auth.json",
+                contents: '{"refresh":"rotated"}',
+              },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      provider: "codex",
+      kind: "auth_json",
+      value: '{"refresh":"rotated"}',
+    });
+
+    expect(
+      byoSubscriptionCredentialMaterialFromRuntimeUpdate("codex", {
+        provider: "claude",
+        assets: {
+          home: {
+            files: [
+              {
+                relativePath: "auth.json",
+                contents: '{"refresh":"wrong-provider"}',
+              },
+            ],
+          },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      byoSubscriptionCredentialMaterialFromRuntimeUpdate("codex", {
+        provider: "codex",
+        env: {
+          OPENAI_API_KEY: "api-key",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("writes refreshed Codex runtime auth material back through the user-scoped store", async () => {
+    const writeBackFromRuntime = vi.fn<NonNullable<ByoSubscriptionCredentialStore["writeBackFromRuntime"]>>(
+      async () => undefined,
+    );
+
+    await expect(
+      writeBackByoSubscriptionRuntimeCredentialMaterialization({
+        store: {
+          resolveForRuntime: vi.fn(),
+          writeBackFromRuntime,
+        },
+        companyId: "company-1",
+        userId: "user-1",
+        provider: "codex",
+        agentId: "agent-1",
+        issueId: "issue-1",
+        heartbeatRunId: "run-1",
+        runtimeCredentialUpdates: {
+          provider: "codex",
+          assets: {
+            home: {
+              files: [
+                {
+                  relativePath: "auth.json",
+                  contents: '{"refresh":"rotated"}',
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(writeBackFromRuntime).toHaveBeenCalledWith({
+      companyId: "company-1",
+      userId: "user-1",
+      provider: "codex",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      material: {
+        provider: "codex",
+        kind: "auth_json",
+        value: '{"refresh":"rotated"}',
+      },
+    });
   });
 });

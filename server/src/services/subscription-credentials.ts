@@ -56,6 +56,15 @@ function assertKindMatchesProvider(
   }
 }
 
+function assertMaterialMatchesKind(kind: SubscriptionCredentialKind, material: string) {
+  if (kind !== "claude_credentials_json" && kind !== "codex_auth_json") return;
+  try {
+    JSON.parse(material);
+  } catch {
+    throw badRequest(`Credential kind "${kind}" requires valid JSON material`);
+  }
+}
+
 // Build redacted metadata from the declared credential kind only. Do not derive
 // this record from plaintext credential material; even suffixes, lengths, or
 // JSON key names are treated as credential-derived data.
@@ -137,6 +146,7 @@ export function subscriptionCredentialService(db: Db) {
       input: UpsertSubscriptionCredentialInput,
     ): Promise<SubscriptionCredentialReadModel> {
       assertKindMatchesProvider(input.provider, input.credentialKind);
+      assertMaterialMatchesKind(input.credentialKind, input.material);
 
       const provider = getSecretProvider(ENCRYPTION_PROVIDER);
       const prepared = await provider.createSecret({ value: input.material });
@@ -181,6 +191,38 @@ export function subscriptionCredentialService(db: Db) {
         .returning();
 
       return toReadModel(row);
+    },
+
+    async updateMaterialFromRuntime(
+      companyId: string,
+      userId: string,
+      provider: SubscriptionCredentialProvider,
+      material: string,
+    ): Promise<SubscriptionCredentialReadModel> {
+      const row = await findRow(companyId, userId, provider);
+      if (!row) throw notFound("Subscription credential not found");
+      if (row.status !== "active") {
+        throw unprocessable("Subscription credential is not active", { code: "credential_inactive" });
+      }
+      const credentialKind = row.credentialKind as SubscriptionCredentialKind;
+      assertKindMatchesProvider(provider, credentialKind);
+      assertMaterialMatchesKind(credentialKind, material);
+
+      const encryptionProvider = getSecretProvider(ENCRYPTION_PROVIDER);
+      const prepared = await encryptionProvider.createSecret({ value: material });
+      const [updated] = await db
+        .update(userSubscriptionCredentials)
+        .set({
+          secretProvider: ENCRYPTION_PROVIDER,
+          material: prepared.material as Record<string, unknown>,
+          valueSha256: prepared.valueSha256,
+          redactedMetadata: buildRedactedMetadata(credentialKind),
+          updatedAt: new Date(),
+        })
+        .where(eq(userSubscriptionCredentials.id, row.id))
+        .returning();
+
+      return toReadModel(updated);
     },
 
     async delete(companyId: string, userId: string, id: string): Promise<void> {

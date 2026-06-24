@@ -17,6 +17,7 @@ import {
   materializeAdapterRuntimeCredentialAsset,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
+  readAdapterExecutionTargetTextFile,
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
@@ -48,6 +49,7 @@ import {
   isCodexUnknownSessionError,
 } from "./parse.js";
 import {
+  codexAuthJsonHasUsableAuth,
   codexHomeHasUsableAuth,
   isManagedCodexHomePath,
   pathExists,
@@ -371,7 +373,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const runtimeCredentialEnv = adapterRuntimeCredentialEnv(executionTarget);
   const runtimeCredentialEnvKeys = Object.keys(runtimeCredentialEnv);
-  const codexHomeCredentialFiles = adapterRuntimeCredentialAssetFiles(executionTarget, "home");
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
@@ -383,6 +384,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  const codexHomeCredentialFiles = configuredOpenAiApiKey
+    ? []
+    : adapterRuntimeCredentialAssetFiles(executionTarget, "home");
+  const hasRuntimeCodexAuthJson =
+    codexHomeCredentialFiles.some((file) => file.relativePath === "auth.json");
   // A configured CODEX_HOME that lives under the Paperclip-managed company tree
   // (the per-agent home set by the server isolation guard) still needs auth
   // seeded — it ships with no credentials and OPENAI_API_KEY="" by default.
@@ -801,6 +807,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
+    const readRefreshedCodexAuthCredentialUpdates =
+      async (): Promise<AdapterExecutionResult["runtimeCredentialUpdates"]> => {
+        if (!hasRuntimeCodexAuthJson || configuredOpenAiApiKey) return null;
+
+        const authPath = remoteCodexHome
+          ? path.posix.join(remoteCodexHome, "auth.json")
+          : path.join(runtimeCodexHome, "auth.json");
+        const contents = await readAdapterExecutionTargetTextFile(
+          runId,
+          runtimeExecutionTarget,
+          authPath,
+          {
+            cwd: effectiveExecutionCwd,
+            env: runtimeEnv,
+            timeoutSec: 15,
+            graceSec: 5,
+            maxBytes: 32_768,
+          },
+        );
+        if (contents === null) {
+          throw new Error(
+            "Codex subscription auth.json was missing after the run; refusing to leave stored subscription credentials stale.",
+          );
+        }
+        if (!codexAuthJsonHasUsableAuth(contents)) {
+          throw new Error(
+            "Codex subscription auth.json was not valid credential material after the run; refusing to overwrite stored credentials.",
+          );
+        }
+        return {
+          provider: "codex",
+          assets: {
+            home: {
+              files: [
+                {
+                  relativePath: "auth.json",
+                  contents,
+                  mode: 0o600,
+                },
+              ],
+            },
+          },
+        };
+      };
+
+    const withRuntimeCredentialUpdates = async (
+      result: AdapterExecutionResult,
+    ): Promise<AdapterExecutionResult> => {
+      const runtimeCredentialUpdates = await readRefreshedCodexAuthCredentialUpdates();
+      return runtimeCredentialUpdates ? { ...result, runtimeCredentialUpdates } : result;
+    };
+
     const runAttempt = async (resumeSessionId: string | null) => {
       const execArgs = buildCodexExecArgs(
         forceSaferInvocation ? { ...config, fastMode: false } : config,
@@ -1076,10 +1134,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toResult(retry, true, true);
+        return await withRuntimeCredentialUpdates(toResult(retry, true, true));
       }
 
-      return toResult(initial, false, false);
+      return await withRuntimeCredentialUpdates(toResult(initial, false, false));
     } finally {
       if (paperclipBridge) {
         await paperclipBridge.stop();

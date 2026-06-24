@@ -198,6 +198,7 @@ import {
   createSubscriptionCredentialRuntimeStore,
   providerForSubscriptionCredentialAdapter,
   resolveByoSubscriptionRuntimeCredentialMaterialization,
+  writeBackByoSubscriptionRuntimeCredentialMaterialization,
 } from "./runtime-credential-materialization.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
@@ -9159,7 +9160,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       lease: acquiredEnvironment.lease,
       leaseContext: acquiredEnvironment.leaseContext,
     };
-    const runtimeCredentialProvider = providerForSubscriptionCredentialAdapter(agent.adapterType);
+    const adapterRuntimeCredentialProvider = providerForSubscriptionCredentialAdapter(agent.adapterType);
+    const resolvedRuntimeEnv = parseObject(effectiveResolvedConfig.env);
+    const runtimeCredentialProvider =
+      adapterRuntimeCredentialProvider === "codex" && readNonEmptyString(resolvedRuntimeEnv.OPENAI_API_KEY)
+        ? null
+        : adapterRuntimeCredentialProvider;
     const runtimeCredentialUserId = runtimeCredentialProvider
       ? await resolveRuntimeCredentialUserId({
           companyId: agent.companyId,
@@ -9719,6 +9725,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             reports: adapterResult.runtimeServices,
           })
         : [];
+      await writeBackByoSubscriptionRuntimeCredentialMaterialization({
+        store: subscriptionCredentialRuntimeStore,
+        companyId: agent.companyId,
+        userId: runtimeCredentialUserId,
+        provider: runtimeCredentialProvider,
+        runtimeCredentialUpdates: adapterResult.runtimeCredentialUpdates ?? null,
+        agentId: agent.id,
+        issueId: issueId ?? null,
+        heartbeatRunId: run.id,
+      });
       if (adapterManagedRuntimeServices.length > 0) {
         const combinedRuntimeServices = [
           ...runtimeServices,

@@ -226,6 +226,54 @@ describe("subscriptionCredentialService", () => {
     expect(JSON.stringify(state.updateValues)).not.toContain("plain-token");
   });
 
+  it("rotates runtime-refreshed material through encryption without resetting test state", async () => {
+    const refreshedAuth = JSON.stringify({
+      accessToken: "new-access-token",
+      refreshToken: "new-refresh-token",
+    });
+    const row = makeCredentialRow({
+      provider: "codex",
+      credentialKind: "codex_auth_json",
+      lastTestStatus: "passed",
+      lastTestedAt: NOW,
+    });
+    const updatedRow = makeCredentialRow({
+      ...row,
+      material: ENCRYPTED_MATERIAL,
+      valueSha256: sha256Hex(refreshedAuth),
+      redactedMetadata: {
+        kind: "codex_auth_json",
+        materialFormat: "json",
+      },
+    });
+    const { db, state } = makeFakeDb({
+      findFirstRows: [row],
+      updateReturningRows: [updatedRow],
+    });
+    const svc = subscriptionCredentialService(db);
+
+    const result = await svc.updateMaterialFromRuntime(
+      row.companyId as string,
+      row.userId as string,
+      "codex",
+      refreshedAuth,
+    );
+
+    expect(mockSecretProvider.createSecret).toHaveBeenCalledWith({ value: refreshedAuth });
+    expect(state.updateValues[0]).toMatchObject({
+      material: ENCRYPTED_MATERIAL,
+      valueSha256: sha256Hex(refreshedAuth),
+      redactedMetadata: {
+        kind: "codex_auth_json",
+        materialFormat: "json",
+      },
+    });
+    expect(state.updateValues[0]).not.toHaveProperty("lastTestStatus");
+    expect(state.updateValues[0]).not.toHaveProperty("lastTestedAt");
+    expect(JSON.stringify(state.updateValues[0])).not.toContain("new-refresh-token");
+    expect(result).not.toHaveProperty("material");
+  });
+
   it("rejects decrypted material that does not match the stored integrity hash", async () => {
     const row = makeCredentialRow({ valueSha256: sha256Hex("different-token") });
     const { db } = makeFakeDb({ findFirstRows: [row] });

@@ -39,6 +39,14 @@ function readApiKeyFromAuthPayload(authPayload: unknown): string | null {
   return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
 }
 
+export function codexAuthJsonHasUsableAuth(contents: string): boolean {
+  try {
+    return hasUsableAuthPayload(JSON.parse(contents));
+  } catch {
+    return false;
+  }
+}
+
 export function resolveSharedCodexHomeDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -97,8 +105,7 @@ export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
   if (!(await pathExists(authPath))) return false;
   try {
     const raw = await fs.readFile(authPath, "utf8");
-    const parsed = JSON.parse(raw);
-    return hasUsableAuthPayload(parsed);
+    return codexAuthJsonHasUsableAuth(raw);
   } catch {
     return false;
   }
