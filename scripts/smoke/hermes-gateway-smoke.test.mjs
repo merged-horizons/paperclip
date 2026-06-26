@@ -86,6 +86,8 @@ config="$HERMES_SMOKE_STATE_DIR/hermes-home/config.yaml"
 grep -Fq "default: 'z-ai/glm-5.2'" "$config"
 grep -Fq "provider: 'openrouter'" "$config"
 grep -Fq "base_url: 'https://openrouter.ai/api/v1'" "$config"
+grep -Fq "command_allowlist:" "$config"
+grep -Fq -- "- execute_code" "$config"
 ! grep -Eiq "api[_-]?key|token|secret" "$config"
 `,
   );
