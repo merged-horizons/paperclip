@@ -1018,7 +1018,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
   router.get("/pipelines/:pipelineId/health", async (req, res) => {
     const pipelineId = req.params.pipelineId as string;
     const companyId = await assertPipelineAccess(db, req, pipelineId);
-    const [pipeline, stages, instructionDocs, companyAgents, companyPipelines, companyStages, failedAutomationRows] = await Promise.all([
+    const [pipeline, stages, instructionDocs, companyAgents, companyPipelines, companyStages, automationExecutionRows] = await Promise.all([
       db.select().from(pipelines)
         .where(and(eq(pipelines.id, pipelineId), eq(pipelines.companyId, companyId)))
         .then((rows) => rows[0] ?? null),
@@ -1052,10 +1052,14 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       db.select({
         caseId: pipelineCases.id,
         caseTitle: pipelineCases.title,
-        stageId: pipelineStages.id,
-        stageKey: pipelineStages.key,
-        stageName: pipelineStages.name,
+        currentStageId: pipelineStages.id,
+        currentStageKey: pipelineStages.key,
+        currentStageName: pipelineStages.name,
+        automationId: pipelineAutomationExecutions.automationId,
+        status: pipelineAutomationExecutions.status,
         error: pipelineAutomationExecutions.error,
+        updatedAt: pipelineAutomationExecutions.updatedAt,
+        createdAt: pipelineAutomationExecutions.createdAt,
       })
         .from(pipelineAutomationExecutions)
         .innerJoin(pipelineCases, eq(pipelineAutomationExecutions.caseId, pipelineCases.id))
@@ -1063,11 +1067,11 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         .where(and(
           eq(pipelineAutomationExecutions.companyId, companyId),
           eq(pipelineCases.pipelineId, pipelineId),
-          eq(pipelineAutomationExecutions.status, "failed"),
+          inArray(pipelineAutomationExecutions.status, ["failed", "succeeded"]),
           isNull(pipelineCases.terminalKind),
         ))
         .orderBy(desc(pipelineAutomationExecutions.updatedAt))
-        .limit(50),
+        .limit(200),
     ]);
     if (!pipeline) throw notFound("Pipeline not found");
 
@@ -1138,14 +1142,29 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         instructionsBody: automation?.instructionsBody ?? bodyByStageId.get(stage.id) ?? "",
       };
     });
-    const failedAutomations: PipelineHealthFailedAutomationInput[] = failedAutomationRows.map((row) => ({
-      stageId: row.stageId,
-      stageKey: row.stageKey,
-      stageName: row.stageName,
-      caseId: row.caseId,
-      caseTitle: row.caseTitle,
-      error: row.error,
-    }));
+    const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+    const latestExecutionByCaseAutomation = new Map<string, typeof automationExecutionRows[number]>();
+    for (const row of automationExecutionRows) {
+      const key = `${row.caseId}:${row.automationId}`;
+      const current = latestExecutionByCaseAutomation.get(key);
+      if (!current || row.updatedAt > current.updatedAt || (row.updatedAt.getTime() === current.updatedAt.getTime() && row.createdAt > current.createdAt)) {
+        latestExecutionByCaseAutomation.set(key, row);
+      }
+    }
+    const failedAutomations: PipelineHealthFailedAutomationInput[] = [...latestExecutionByCaseAutomation.values()]
+      .filter((row) => row.status === "failed")
+      .map((row) => {
+        const automationStageId = row.automationId.split(":")[0] ?? "";
+        const automationStage = stageById.get(automationStageId);
+        return {
+          stageId: automationStage?.id ?? row.currentStageId,
+          stageKey: automationStage?.key ?? row.currentStageKey,
+          stageName: automationStage?.name ?? row.currentStageName,
+          caseId: row.caseId,
+          caseTitle: row.caseTitle,
+          error: row.error,
+        };
+      });
 
     res.json(computePipelineHealth({ pipelineId, stages: healthStages, agentsById, pipelinesById, failedAutomations }));
   });

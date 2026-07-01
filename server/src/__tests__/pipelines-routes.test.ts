@@ -171,6 +171,118 @@ describeEmbeddedPostgres("pipeline routes", () => {
     isInstanceAdmin: true,
   };
 
+  it("reports only latest unresolved automation failures from the automation stage", async () => {
+    const company = await seedCompany();
+    const agent = await seedAutomationAgent(company.id);
+    const http = request(app(boardActor));
+    const [routine] = await db.insert(routines).values({
+      companyId: company.id,
+      title: "Assembly automation",
+      description: "Assemble the item.",
+      assigneeAgentId: agent.id,
+    }).returning();
+
+    const [pipeline] = await db.insert(pipelines).values({
+      companyId: company.id,
+      key: "content",
+      name: "Content",
+      createdByUserId: "board-user",
+    }).returning();
+    const pipelineId = pipeline!.id;
+    const [assemblyStage, reviewStage] = await db.insert(pipelineStages).values([
+      {
+        pipelineId,
+        key: "assembly",
+        name: "Assembly",
+        kind: "working",
+        position: 100,
+        config: { onEnter: { type: "run_routine", routineId: routine!.id } },
+      },
+      {
+        pipelineId,
+        key: "content-review",
+        name: "Content Review",
+        kind: "review",
+        position: 200,
+      },
+    ]).returning();
+    const automationId = `${assemblyStage.id}:on_enter`;
+    const [resolvedCase, unresolvedCase] = await db.insert(pipelineCases).values([
+      {
+        companyId: company.id,
+        pipelineId,
+        stageId: reviewStage.id,
+        caseKey: "resolved",
+        title: "Resolved automation",
+      },
+      {
+        companyId: company.id,
+        pipelineId,
+        stageId: reviewStage.id,
+        caseKey: "unresolved",
+        title: "Unresolved automation",
+      },
+    ]).returning();
+
+    await db.insert(pipelineAutomationExecutions).values([
+      {
+        companyId: company.id,
+        caseId: resolvedCase!.id,
+        automationId,
+        triggeringEventId: randomUUID(),
+        routineId: routine!.id,
+        status: "failed",
+        error: "old failure",
+        createdAt: new Date("2026-06-30T18:00:00.000Z"),
+        updatedAt: new Date("2026-06-30T18:00:00.000Z"),
+      },
+      {
+        companyId: company.id,
+        caseId: resolvedCase!.id,
+        automationId,
+        triggeringEventId: randomUUID(),
+        routineId: routine!.id,
+        status: "succeeded",
+        createdAt: new Date("2026-06-30T22:00:00.000Z"),
+        updatedAt: new Date("2026-06-30T22:00:00.000Z"),
+      },
+      {
+        companyId: company.id,
+        caseId: unresolvedCase!.id,
+        automationId,
+        triggeringEventId: randomUUID(),
+        routineId: routine!.id,
+        status: "failed",
+        error: "first failure",
+        createdAt: new Date("2026-06-30T20:00:00.000Z"),
+        updatedAt: new Date("2026-06-30T20:00:00.000Z"),
+      },
+      {
+        companyId: company.id,
+        caseId: unresolvedCase!.id,
+        automationId,
+        triggeringEventId: randomUUID(),
+        routineId: routine!.id,
+        status: "failed",
+        error: "latest failure",
+        createdAt: new Date("2026-06-30T21:00:00.000Z"),
+        updatedAt: new Date("2026-06-30T21:00:00.000Z"),
+      },
+    ]);
+
+    const health = await http.get(`/api/pipelines/${pipelineId}/health`).expect(200);
+
+    expect(health.body.warnings).toEqual([
+      expect.objectContaining({
+        code: "automation_failed",
+        stageId: assemblyStage.id,
+        stageKey: "assembly",
+        stageName: "Assembly",
+        href: `/pipelines/${pipelineId}/items/${unresolvedCase!.id}`,
+      }),
+    ]);
+  });
+
   it("exposes the pipeline and case route surface", async () => {
     const company = await seedCompany();
     const http = request(app(boardActor));
