@@ -466,14 +466,15 @@ export function environmentRoutes(
           session: setupSessionActivityDetails(refreshed.session),
           terminalSession: {
             connectionType: "ssh",
-            expiresAt: minted.session.expiresAt.toISOString(),
+            connectExpiresAt: minted.session.connectExpiresAt.toISOString(),
+            sessionExpiresAt: minted.session.sessionExpiresAt.toISOString(),
           },
         },
       });
       res.status(201).json({
         id: minted.session.id,
         token: minted.token,
-        expiresAt: minted.session.expiresAt.toISOString(),
+        expiresAt: minted.session.connectExpiresAt.toISOString(),
         setupSessionId: minted.session.setupSessionId,
         environmentId: minted.session.environmentId,
         connectionType: "ssh",

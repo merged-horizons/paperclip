@@ -38,7 +38,8 @@ export interface EnvironmentCustomImageTerminalSessionRecord {
   connectionType: "ssh";
   ssh: ParsedCustomImageSetupSshCommand;
   createdAt: Date;
-  expiresAt: Date;
+  connectExpiresAt: Date;
+  sessionExpiresAt: Date;
 }
 
 export interface MintedEnvironmentCustomImageTerminalSession {
@@ -192,12 +193,16 @@ export class EnvironmentCustomImageTerminalSessionStore {
     const now = input.now ?? new Date();
     this.cleanupExpired(now);
 
+    const setupExpiresAt = toValidFutureDate(input.setupExpiresAt, now);
+    if (!setupExpiresAt) {
+      throw new Error("Terminal sessions require a future setup session expiry.");
+    }
     const candidateExpirations = [
       new Date(now.getTime() + DEFAULT_TERMINAL_SESSION_TOKEN_TTL_MS),
-      toValidFutureDate(input.setupExpiresAt, now),
+      setupExpiresAt,
       toValidFutureDate(input.connectionExpiresAt, now),
     ].filter((date): date is Date => date !== null);
-    const expiresAt = minDate(candidateExpirations);
+    const connectExpiresAt = minDate(candidateExpirations);
     const token = randomBytes(TERMINAL_SESSION_TOKEN_BYTES).toString("base64url");
     const id = randomUUID();
     const session: EnvironmentCustomImageTerminalSessionRecord = {
@@ -209,7 +214,8 @@ export class EnvironmentCustomImageTerminalSessionStore {
       connectionType: "ssh",
       ssh: input.ssh,
       createdAt: now,
-      expiresAt,
+      connectExpiresAt,
+      sessionExpiresAt: setupExpiresAt,
     };
     this.sessionsById.set(id, {
       tokenHash: hashTerminalSessionToken(token),
@@ -223,7 +229,7 @@ export class EnvironmentCustomImageTerminalSessionStore {
     const stored = this.sessionsById.get(input.id) ?? null;
     if (!stored) return null;
     if (stored.tokenHash !== hashTerminalSessionToken(input.token)) return null;
-    if (stored.session.expiresAt.getTime() <= now.getTime()) {
+    if (stored.session.connectExpiresAt.getTime() <= now.getTime()) {
       this.sessionsById.delete(input.id);
       return null;
     }
@@ -234,7 +240,7 @@ export class EnvironmentCustomImageTerminalSessionStore {
     if (!id) return null;
     const stored = this.sessionsById.get(id) ?? null;
     if (!stored) return null;
-    if (stored.session.expiresAt.getTime() <= now.getTime()) {
+    if (stored.session.connectExpiresAt.getTime() <= now.getTime()) {
       this.sessionsById.delete(id);
       return null;
     }
@@ -260,7 +266,7 @@ export class EnvironmentCustomImageTerminalSessionStore {
   cleanupExpired(now = new Date()): number {
     let removed = 0;
     for (const [id, stored] of this.sessionsById) {
-      if (stored.session.expiresAt.getTime() <= now.getTime()) {
+      if (stored.session.connectExpiresAt.getTime() <= now.getTime()) {
         this.sessionsById.delete(id);
         removed += 1;
       }

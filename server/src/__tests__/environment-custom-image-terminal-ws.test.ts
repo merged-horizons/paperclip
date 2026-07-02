@@ -108,6 +108,10 @@ async function waitForAssertion(assertion: () => void) {
   throw lastError;
 }
 
+async function waitForDuration(ms: number) {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (err: Error) => void;
@@ -368,6 +372,51 @@ describe("custom image terminal websocket bridge", () => {
       expect(fakeShell.closeCalls).toBeGreaterThan(0);
       expect(sessionStore.get({ id: minted.session.id, token: minted.token })).toBeNull();
     });
+  });
+
+  it("keeps established terminal sessions alive past connect-token expiry and closes them at setup expiry", async () => {
+    const setupExpiresAt = new Date(Date.now() + 2500);
+    customImages.getSessionById.mockResolvedValue(createSession({ expiresAt: setupExpiresAt }));
+    customImages.refreshSetupSession.mockResolvedValue({
+      session: createSession({ expiresAt: setupExpiresAt }),
+      connectionPayload: {
+        type: "ssh",
+        command: "ssh fresh-token@fresh.example.test -p 2200",
+        expiresAt: futureDate(30).toISOString(),
+      },
+    });
+    const { port } = await startHarness();
+    const minted = sessionStore.create({
+      setupSessionId: "session-1",
+      companyId: "company-1",
+      environmentId: "env-1",
+      provider: "daytona",
+      ssh: { username: "old-token", host: "old.example.test", port: 22 },
+      setupExpiresAt,
+      now: new Date(Date.now() - 5 * 60 * 1000 + 750),
+    });
+    expect(minted.session.connectExpiresAt.getTime()).toBeLessThan(minted.session.sessionExpiresAt.getTime());
+
+    const ws = new WebSocket(terminalUrl(port, {
+      terminalSessionId: minted.session.id,
+      token: minted.token,
+    }));
+    let closed = false;
+    ws.on("close", () => {
+      closed = true;
+    });
+    const readyPromise = waitForJsonMessage(ws, (frame) => frame.type === "ready");
+    const closePromise = waitForClose(ws);
+
+    await waitForOpen(ws);
+    await readyPromise;
+    await waitForDuration(Math.max(0, minted.session.connectExpiresAt.getTime() - Date.now()) + 400);
+    expect(closed).toBe(false);
+    expect(fakeShell.closeCalls).toBe(0);
+
+    await closePromise;
+    expect(closed).toBe(true);
+    expect(fakeShell.closeCalls).toBeGreaterThan(0);
   });
 
   it("applies the latest resize sent while the SSH shell is still opening", async () => {

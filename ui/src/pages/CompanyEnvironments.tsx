@@ -288,6 +288,33 @@ function customImageTerminalStatusCopy(state: CustomImageTerminalConnectionState
   }
 }
 
+function customImageTerminalCloseReasonCopy(reason: unknown) {
+  if (
+    reason !== "expired"
+    && reason !== "ssh_closed"
+    && reason !== "server_shutdown"
+    && reason !== "setup_finished"
+    && reason !== "setup_cancelled"
+  ) {
+    return typeof reason === "string" && reason.trim() ? "Terminal closed." : null;
+  }
+
+  switch (reason) {
+    case "expired":
+      return "Setup session expired.";
+    case "ssh_closed":
+      return "SSH session closed.";
+    case "server_shutdown":
+      return "Terminal server shut down.";
+    case "setup_finished":
+      return "Setup session finished.";
+    case "setup_cancelled":
+      return "Setup session cancelled.";
+    default:
+      return null;
+  }
+}
+
 function EnvironmentCustomImageBrowserTerminal({
   autoConnect = false,
   sessionId,
@@ -516,7 +543,7 @@ function EnvironmentCustomImageBrowserTerminal({
 
         if (frame.type === "closed") {
           setConnectionState("closed");
-          setErrorMessage(typeof frame.reason === "string" ? frame.reason : null);
+          setErrorMessage(customImageTerminalCloseReasonCopy(frame.reason));
         }
       };
 

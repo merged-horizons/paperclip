@@ -300,7 +300,7 @@ async function validateTerminalUpgrade(input: {
     input.sessionStore.delete(terminalSession.id);
     throw conflict(`Cannot open terminal for setup status "${refreshed.session.status}".`);
   }
-  requireFutureSetupExpiry(refreshed.session, input.now);
+  const sessionExpiresAt = requireFutureSetupExpiry(refreshed.session, input.now);
 
   const payloadValidation = validateCustomImageSetupSshPayload(refreshed.connectionPayload, input.now);
   if (!payloadValidation.ok) {
@@ -308,7 +308,7 @@ async function validateTerminalUpgrade(input: {
     throw terminalPayloadValidationError(payloadValidation);
   }
 
-  return { ...terminalSession, ssh: payloadValidation.ssh };
+  return { ...terminalSession, ssh: payloadValidation.ssh, sessionExpiresAt };
 }
 
 class Ssh2Shell implements EnvironmentCustomImageSshShell {
@@ -490,7 +490,7 @@ export function setupEnvironmentCustomImageTerminalWebSocketServer(
       },
     });
 
-    const expiresInMs = Math.max(0, context.terminalSession.expiresAt.getTime() - Date.now());
+    const expiresInMs = Math.max(0, context.terminalSession.sessionExpiresAt.getTime() - Date.now());
     expiryTimer = setTimeout(() => {
       closeTerminal("expired", 1008, "expired");
     }, expiresInMs);

@@ -108,7 +108,7 @@ describe("validateCustomImageSetupSshPayload", () => {
 });
 
 describe("EnvironmentCustomImageTerminalSessionStore", () => {
-  it("mints opaque tokens and caps expiry by setup and provider payload expiry", () => {
+  it("mints opaque connect tokens and tracks live session expiry separately", () => {
     const store = new EnvironmentCustomImageTerminalSessionStore();
     const now = new Date("2026-06-25T20:00:00.000Z");
     const minted = store.create({
@@ -118,13 +118,14 @@ describe("EnvironmentCustomImageTerminalSessionStore", () => {
       provider: "daytona",
       ssh: { username: "ssh-token-secret", host: "203.0.113.10", port: 2222 },
       setupExpiresAt: new Date("2026-06-25T20:30:00.000Z"),
-      connectionExpiresAt: new Date("2026-06-25T20:02:00.000Z"),
+      connectionExpiresAt: new Date("2026-06-25T20:10:00.000Z"),
       now,
     });
 
     expect(minted.token).toHaveLength(43);
     expect(minted.session.id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(minted.session.expiresAt.toISOString()).toBe("2026-06-25T20:02:00.000Z");
+    expect(minted.session.connectExpiresAt.toISOString()).toBe("2026-06-25T20:05:00.000Z");
+    expect(minted.session.sessionExpiresAt.toISOString()).toBe("2026-06-25T20:30:00.000Z");
     expect(store.get({
       id: minted.session.id,
       token: minted.token,
@@ -140,7 +141,7 @@ describe("EnvironmentCustomImageTerminalSessionStore", () => {
     expect(store.get({
       id: minted.session.id,
       token: minted.token,
-    }, new Date("2026-06-25T20:02:00.000Z"))).toBeNull();
+    }, new Date("2026-06-25T20:05:00.000Z"))).toBeNull();
   });
 
   it("deletes all tokens for a setup session", () => {
