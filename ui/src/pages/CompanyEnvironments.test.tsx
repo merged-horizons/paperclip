@@ -788,6 +788,16 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(FakeWebSocket.instances[0].url).toContain("cols=120");
     expect(FakeWebSocket.instances[0].url).toContain("rows=32");
     expect(xtermMocks.terminalInstances[0].options.cursorBlink).toBe(true);
+    expect(xtermMocks.terminalInstances[0].options.cursorInactiveStyle).toBe("bar");
+    expect(xtermMocks.terminalInstances[0].options.cursorStyle).toBe("bar");
+    expect(xtermMocks.terminalInstances[0].options.cursorWidth).toBe(2);
+    expect(xtermMocks.terminalInstances[0].options.customGlyphs).toBe(true);
+    expect(xtermMocks.terminalInstances[0].options.letterSpacing).toBe(0);
+    expect(xtermMocks.terminalInstances[0].options.theme).toMatchObject({
+      cursor: "#22d3ee",
+      cursorAccent: "#020617",
+    });
+    expect(String(xtermMocks.terminalInstances[0].options.fontFamily)).toContain("Nerd Font");
 
     await act(async () => {
       FakeWebSocket.instances[0].open();

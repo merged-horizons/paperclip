@@ -97,6 +97,10 @@ const { WebSocket, WebSocketServer } = require("ws") as {
   WebSocket: { OPEN: number };
   WebSocketServer: new (opts: { noServer: boolean }) => TerminalWsServer;
 };
+const CUSTOM_IMAGE_TERMINAL_UTF8_ENV = {
+  LANG: "C.UTF-8",
+  LC_CTYPE: "C.UTF-8",
+};
 
 function isWritableUpgradeSocket(socket: Duplex) {
   const maybeWritableState = socket as Duplex & { writable?: boolean; writableEnded?: boolean; writableDestroyed?: boolean };
@@ -203,6 +207,7 @@ function handleClientFrame(
   socket: TerminalWsSocket,
   shell: EnvironmentCustomImageSshShell | null,
   raw: unknown,
+  onPendingResize?: (dimensions: { cols: number; rows: number }) => void,
 ) {
   const text = decodeClientMessage(raw);
   if (!text) return;
@@ -226,18 +231,21 @@ function handleClientFrame(
     return;
   }
   if (frame.type === "resize") {
-    const cols = typeof frame.cols === "number" ? frame.cols : null;
-    const rows = typeof frame.rows === "number" ? frame.rows : null;
+    const cols = typeof frame.cols === "number" && Number.isInteger(frame.cols) ? frame.cols : null;
+    const rows = typeof frame.rows === "number" && Number.isInteger(frame.rows) ? frame.rows : null;
     if (
-      shell
-      && Number.isInteger(cols)
-      && Number.isInteger(rows)
+      cols !== null
+      && rows !== null
       && cols > 0
       && rows > 0
       && cols <= 9999
       && rows <= 9999
     ) {
-      shell.resize(cols, rows);
+      if (shell) {
+        shell.resize(cols, rows);
+      } else {
+        onPendingResize?.({ cols, rows });
+      }
     }
     return;
   }
@@ -372,6 +380,7 @@ export function createSsh2EnvironmentCustomImageSshConnector(): EnvironmentCusto
           connect(config: Record<string, unknown>): void;
           shell(
             window: { term: string; cols: number; rows: number },
+            options: { env?: Record<string, string> },
             callback: (err: Error | undefined, stream: ConstructorParameters<typeof Ssh2Shell>[1]) => void,
           ): void;
           end(): void;
@@ -394,7 +403,7 @@ export function createSsh2EnvironmentCustomImageSshConnector(): EnvironmentCusto
         };
 
         client.once("ready", () => {
-          client.shell({ term, cols, rows }, (err, stream) => {
+          client.shell({ term, cols, rows }, { env: CUSTOM_IMAGE_TERMINAL_UTF8_ENV }, (err, stream) => {
             if (err || !stream) {
               fail(err ?? new Error("SSH shell failed to open."));
               return;
@@ -445,6 +454,7 @@ export function setupEnvironmentCustomImageTerminalWebSocketServer(
     }
 
     let shell: EnvironmentCustomImageSshShell | null = null;
+    let pendingResize: { cols: number; rows: number } | null = null;
     let cleanupRegistry: (() => void) | null = null;
     let expiryTimer: ReturnType<typeof setTimeout> | null = null;
     let cleanedUp = false;
@@ -486,7 +496,9 @@ export function setupEnvironmentCustomImageTerminalWebSocketServer(
     }, expiresInMs);
 
     socket.on("message", (data: unknown) => {
-      handleClientFrame(socket, shell, data);
+      handleClientFrame(socket, shell, data, (dimensions) => {
+        pendingResize = dimensions;
+      });
     });
 
     socket.on("close", () => {
@@ -509,6 +521,10 @@ export function setupEnvironmentCustomImageTerminalWebSocketServer(
           return;
         }
         shell = connectedShell;
+        if (pendingResize) {
+          shell.resize(pendingResize.cols, pendingResize.rows);
+          pendingResize = null;
+        }
         shell.onData((data) => {
           sendJson(socket, { type: "output", data });
         });

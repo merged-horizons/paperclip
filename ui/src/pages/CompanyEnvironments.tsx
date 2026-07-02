@@ -232,6 +232,20 @@ function setupConnectionFallbackMessage(input: {
 const CUSTOM_IMAGE_TERMINAL_COLS = 100;
 const CUSTOM_IMAGE_TERMINAL_ROWS = 28;
 const CUSTOM_IMAGE_TERMINAL_SCROLLBACK_ROWS = 5_000;
+const CUSTOM_IMAGE_TERMINAL_FONT_FAMILY = [
+  "MesloLGS NF",
+  "MesloLGS Nerd Font Mono",
+  "CaskaydiaCove Nerd Font Mono",
+  "CaskaydiaMono Nerd Font",
+  "JetBrainsMono Nerd Font",
+  "FiraCode Nerd Font Mono",
+  "Symbols Nerd Font Mono",
+  "Menlo",
+  "Monaco",
+  "Consolas",
+  "Liberation Mono",
+  "monospace",
+].join(", ");
 
 type CustomImageTerminalConnectionState =
   | "idle"
@@ -288,6 +302,7 @@ function EnvironmentCustomImageBrowserTerminal({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalInputDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const fitFrameRef = useRef<number | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const autoConnectAttemptedSessionRef = useRef<string | null>(null);
   const lastSentResizeRef = useRef<{ cols: number; rows: number } | null>(null);
@@ -336,6 +351,16 @@ function EnvironmentCustomImageBrowserTerminal({
     }
   }, [sendTerminalResize]);
 
+  const requestFitTerminal = useCallback(() => {
+    if (fitFrameRef.current !== null) {
+      window.cancelAnimationFrame(fitFrameRef.current);
+    }
+    fitFrameRef.current = window.requestAnimationFrame(() => {
+      fitFrameRef.current = null;
+      fitTerminal();
+    });
+  }, [fitTerminal]);
+
   const sendTerminalInput = useCallback((data: string) => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -359,15 +384,20 @@ function EnvironmentCustomImageBrowserTerminal({
       rows: CUSTOM_IMAGE_TERMINAL_ROWS,
       convertEol: false,
       cursorBlink: true,
-      cursorStyle: "block",
-      fontFamily: "Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
+      cursorInactiveStyle: "bar",
+      cursorStyle: "bar",
+      cursorWidth: 2,
+      customGlyphs: true,
+      fontFamily: CUSTOM_IMAGE_TERMINAL_FONT_FAMILY,
       fontSize: 12,
+      letterSpacing: 0,
       lineHeight: 1.35,
       scrollback: CUSTOM_IMAGE_TERMINAL_SCROLLBACK_ROWS,
       theme: {
         background: "#0a0a0a",
         foreground: "#f5f5f5",
-        cursor: "#f8fafc",
+        cursor: "#22d3ee",
+        cursorAccent: "#020617",
         selectionBackground: "#2563eb55",
       },
     });
@@ -380,14 +410,29 @@ function EnvironmentCustomImageBrowserTerminal({
     terminalInputDisposableRef.current = terminal.onData(sendTerminalInput);
 
     if (typeof ResizeObserver !== "undefined") {
-      const resizeObserver = new ResizeObserver(() => fitTerminal());
+      const resizeObserver = new ResizeObserver(() => requestFitTerminal());
       resizeObserver.observe(element);
       resizeObserverRef.current = resizeObserver;
     }
 
-    window.setTimeout(fitTerminal, 0);
+    terminal.focus();
+    requestFitTerminal();
+    const fitTimeouts = [50, 250].map((delay) => window.setTimeout(fitTerminal, delay));
+    const fontsReady = "fonts" in document
+      ? (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts?.ready
+      : null;
+    if (fontsReady) {
+      void fontsReady.then(() => fitTerminal());
+    }
 
     return () => {
+      if (fitFrameRef.current !== null) {
+        window.cancelAnimationFrame(fitFrameRef.current);
+        fitFrameRef.current = null;
+      }
+      for (const timeoutId of fitTimeouts) {
+        window.clearTimeout(timeoutId);
+      }
       resizeObserverRef.current?.disconnect();
       resizeObserverRef.current = null;
       terminalInputDisposableRef.current?.dispose();
@@ -396,7 +441,7 @@ function EnvironmentCustomImageBrowserTerminal({
       xtermRef.current = null;
       terminal.dispose();
     };
-  }, [fitTerminal, sendTerminalInput]);
+  }, [fitTerminal, requestFitTerminal, sendTerminalInput]);
 
   useEffect(() => () => closeSocket("component_unmounted"), [closeSocket]);
 
@@ -427,6 +472,7 @@ function EnvironmentCustomImageBrowserTerminal({
     lastSentResizeRef.current = null;
     setErrorMessage(null);
     resetTerminalScreen();
+    xtermRef.current?.focus();
 
     try {
       fitTerminal();
@@ -441,6 +487,7 @@ function EnvironmentCustomImageBrowserTerminal({
 
       socket.onopen = () => {
         if (socketRef.current !== socket) return;
+        xtermRef.current?.focus();
         sendTerminalResize(true);
       };
 
@@ -452,6 +499,7 @@ function EnvironmentCustomImageBrowserTerminal({
 
         if (frame.type === "ready") {
           setConnectionState("connected");
+          xtermRef.current?.focus();
           return;
         }
 
@@ -539,8 +587,9 @@ function EnvironmentCustomImageBrowserTerminal({
           aria-label="Custom image browser terminal"
           role="application"
           tabIndex={0}
+          onFocus={() => xtermRef.current?.focus()}
           onClick={() => xtermRef.current?.focus()}
-          className="h-[18rem] w-full overflow-hidden bg-neutral-950 outline-none sm:h-[22rem] [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:!overflow-y-auto"
+          className="h-[18rem] w-full overflow-hidden bg-neutral-950 outline-none sm:h-[22rem] [&_.xterm-cursor-bar]:!border-l-2 [&_.xterm-cursor-bar]:!border-l-cyan-300 [&_.xterm-cursor-layer_.xterm-cursor]:!bg-cyan-300 [&_.xterm-helper-textarea]:!opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:!overflow-y-auto [&_.xterm]:h-full"
         />
       </div>
       {errorMessage ? (

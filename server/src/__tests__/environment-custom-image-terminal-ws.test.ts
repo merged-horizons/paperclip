@@ -94,6 +94,30 @@ async function flushPromises() {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+async function waitForAssertion(assertion: () => void) {
+  let lastError: unknown;
+  for (let i = 0; i < 20; i += 1) {
+    await flushPromises();
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (err: Error) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 async function listen(server: HttpServer) {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -321,8 +345,9 @@ describe("custom image terminal websocket bridge", () => {
     });
 
     ws.send(JSON.stringify({ type: "input", data: "echo ok\r" }));
-    await flushPromises();
-    expect(fakeShell.writes).toEqual(["echo ok\r"]);
+    await waitForAssertion(() => {
+      expect(fakeShell.writes).toEqual(["echo ok\r"]);
+    });
 
     const outputPromise = waitForJsonMessage(ws, (frame) => frame.type === "output");
     fakeShell.emitData("shell output\r\n");
@@ -332,14 +357,51 @@ describe("custom image terminal websocket bridge", () => {
     });
 
     ws.send(JSON.stringify({ type: "resize", cols: 120, rows: 40 }));
-    await flushPromises();
-    expect(fakeShell.resizes).toEqual([{ cols: 120, rows: 40 }]);
+    await waitForAssertion(() => {
+      expect(fakeShell.resizes).toEqual([{ cols: 120, rows: 40 }]);
+    });
 
     const closePromise = waitForClose(ws);
     ws.close();
     await closePromise;
-    expect(fakeShell.closeCalls).toBeGreaterThan(0);
-    expect(sessionStore.get({ id: minted.session.id, token: minted.token })).toBeNull();
+    await waitForAssertion(() => {
+      expect(fakeShell.closeCalls).toBeGreaterThan(0);
+      expect(sessionStore.get({ id: minted.session.id, token: minted.token })).toBeNull();
+    });
+  });
+
+  it("applies the latest resize sent while the SSH shell is still opening", async () => {
+    const pendingShell = deferred<EnvironmentCustomImageSshShell>();
+    connector.connect.mockReturnValueOnce(pendingShell.promise);
+    const { port } = await startHarness();
+    const minted = sessionStore.create({
+      setupSessionId: "session-1",
+      companyId: "company-1",
+      environmentId: "env-1",
+      provider: "daytona",
+      ssh: { username: "old-token", host: "old.example.test", port: 22 },
+      setupExpiresAt: futureDate(),
+    });
+    const ws = new WebSocket(terminalUrl(port, {
+      terminalSessionId: minted.session.id,
+      token: minted.token,
+    }));
+    const readyPromise = waitForJsonMessage(ws, (frame) => frame.type === "ready");
+
+    await waitForOpen(ws);
+    const unsupportedFramePromise = waitForJsonMessage(ws, (frame) => frame.type === "error");
+    ws.send(JSON.stringify({ type: "resize", cols: 110, rows: 31 }));
+    ws.send(JSON.stringify({ type: "resize", cols: 132, rows: 43 }));
+    ws.send(JSON.stringify({ type: "unsupported-test-frame" }));
+    await unsupportedFramePromise;
+    expect(fakeShell.resizes).toEqual([]);
+
+    pendingShell.resolve(fakeShell);
+    await readyPromise;
+    expect(fakeShell.resizes).toEqual([{ cols: 132, rows: 43 }]);
+
+    ws.close();
+    await waitForClose(ws);
   });
 
   it("sends a redacted fallback error when SSH bridge connection fails", async () => {
