@@ -72,8 +72,27 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
 };
+const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
+
+function isUniqueConstraintViolation(error: unknown, constraintName: string) {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const maybe = current as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+    };
+    const constraint = maybe.constraint ?? maybe.constraint_name;
+    if (maybe.code === "23505" && constraint === constraintName) return true;
+    current = maybe.cause;
+  }
+  return false;
+}
 
 function remoteProviderHttpError(error: unknown, context: {
   companyId: string;
@@ -1523,28 +1542,36 @@ export function secretService(db: Db) {
       secretName: definition.name,
       version: 1,
     };
-    const reservedSecret = await db
-      .insert(companySecrets)
-      .values({
-        companyId,
-        scope: "user",
-        ownerUserId,
-        userSecretDefinitionId: definition.id,
-        key,
-        name,
-        provider: providerId,
-        providerConfigId: providerConfigId ?? null,
-        status: "archived",
-        managedMode,
-        externalRef: null,
-        providerMetadata: definition.providerMetadata ?? null,
-        latestVersion: 0,
-        description: definition.description ?? null,
-        createdByAgentId: actor?.agentId ?? null,
-        createdByUserId: actor?.userId ?? null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+    let reservedSecret: typeof companySecrets.$inferSelect;
+    try {
+      reservedSecret = await db
+        .insert(companySecrets)
+        .values({
+          companyId,
+          scope: "user",
+          ownerUserId,
+          userSecretDefinitionId: definition.id,
+          key,
+          name,
+          provider: providerId,
+          providerConfigId: providerConfigId ?? null,
+          status: "archived",
+          managedMode,
+          externalRef: null,
+          providerMetadata: definition.providerMetadata ?? null,
+          latestVersion: 0,
+          description: definition.description ?? null,
+          createdByAgentId: actor?.agentId ?? null,
+          createdByUserId: actor?.userId ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    } catch (error) {
+      if (isUniqueConstraintViolation(error, USER_SECRET_VALUE_UNIQUE_CONSTRAINT)) {
+        throw conflict("User secret value already exists");
+      }
+      throw error;
+    }
 
     let prepared: PreparedSecretVersion;
     try {
