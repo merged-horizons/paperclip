@@ -123,6 +123,45 @@ describe("secret routes", () => {
     expect(mockSecretService.createUserSecretDefinition).not.toHaveBeenCalled();
   });
 
+  it("records implicit user-secret definition admins as system actors instead of board pseudo-users", async () => {
+    mockSecretService.createUserSecretDefinition.mockResolvedValue({
+      id: "definition-1",
+      companyId: "company-1",
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+      status: "active",
+    });
+
+    const res = await request(createApp({
+      type: "board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [],
+    })).post("/api/companies/company-1/user-secret-definitions").send({
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.createUserSecretDefinition).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ key: "github_token" }),
+      { userId: null, agentId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: "system",
+        actorId: "local_implicit",
+        action: "user_secret_definition.created",
+      }),
+    );
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("\"board\"");
+  });
+
   it("creates current-user secret values for the authenticated user only", async () => {
     mockSecretService.createCurrentUserSecretValue.mockResolvedValue({
       id: "secret-1",
