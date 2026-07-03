@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { CompanySecret, EnvBinding, UserSecretDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EnvVarEditor } from "./EnvVarEditor";
+import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,11 +51,11 @@ afterEach(() => {
   container.remove();
 });
 
-function render(props: Partial<React.ComponentProps<typeof EnvVarEditor>>) {
+function render(props: Partial<React.ComponentProps<typeof EnvironmentVariablesEditor>>) {
   root = createRoot(container);
   return act(() => {
     root.render(
-      <EnvVarEditor
+      <EnvironmentVariablesEditor
         value={props.value ?? {}}
         secrets={props.secrets ?? []}
         userSecretDefinitions={props.userSecretDefinitions}
@@ -66,7 +66,7 @@ function render(props: Partial<React.ComponentProps<typeof EnvVarEditor>>) {
   });
 }
 
-describe("EnvVarEditor user secret binding", () => {
+describe("EnvironmentVariablesEditor user secret binding", () => {
   it("renders an existing user_secret_ref as a User secret row with the definition and requirement", async () => {
     const value: Record<string, EnvBinding> = {
       GH_TOKEN: { type: "user_secret_ref", key: "PERSONAL_GH_TOKEN", required: true },
@@ -81,14 +81,13 @@ describe("EnvVarEditor user secret binding", () => {
     expect(container.textContent).toContain("Required");
   });
 
-  it("offers the User secret source option and the company-secret rename", async () => {
-    await render({ userSecretDefinitions: [definition] });
-    // The trailing empty row shows the source select defaulting to Plain.
-    const modeTrigger = container.querySelector('[aria-label="Binding mode"]');
-    expect(modeTrigger?.textContent).toContain("Plain");
-    // Helper copy documents both company and user secret sources.
-    expect(container.textContent).toContain("Company secret");
-    expect(container.textContent).toContain("User secret");
+  it("explains user-secret bindings when a user secret row is present", async () => {
+    await render({
+      value: { GH_TOKEN: { type: "user_secret_ref", key: "PERSONAL_GH_TOKEN", required: true } },
+      userSecretDefinitions: [definition],
+    });
+    expect(container.textContent).toContain("Personal GitHub token");
+    expect(container.textContent).toContain("User secrets resolve from the user responsible for the run.");
   });
 
   it("keeps working for company secrets when no user definitions are provided", async () => {

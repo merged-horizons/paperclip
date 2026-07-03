@@ -11,7 +11,7 @@ import { MemoryRouter } from "react-router-dom";
 import { MyUserSecretsTab } from "@/pages/secrets/MyUserSecretsTab";
 import { UserSecretDefinitionsTab } from "@/pages/secrets/UserSecretDefinitionsTab";
 import { MissingUserSecretsBanner } from "@/pages/secrets/MissingUserSecretsBanner";
-import { EnvVarEditor } from "@/components/EnvVarEditor";
+import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
 import type { MyUserSecretEntry } from "@/api/secrets";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -192,7 +192,7 @@ export const EnvPicker: Story = {
       <SeedFixtures>
         <Section title="Env binding picker — User secret source">
           <div className="max-w-2xl">
-            <EnvVarEditor
+            <EnvironmentVariablesEditor
               value={value}
               secrets={[]}
               userSecretDefinitions={definitions}
