@@ -1689,6 +1689,41 @@ export function secretService(db: Db) {
     return secret;
   }
 
+  async function removeUserSecretDefinitionInternal(
+    companyId: string,
+    definitionId: string,
+    actor?: { userId?: string | null; agentId?: string | null },
+  ) {
+    const existing = await resolveUserSecretDefinition(companyId, { definitionId });
+    const values = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "user"),
+        eq(companySecrets.userSecretDefinitionId, definitionId),
+      ));
+    for (const value of values) {
+      await removeSecretInternal(value.id);
+    }
+    return db
+      .update(userSecretDefinitions)
+      .set({
+        key: `${existing.key}__deleted__${existing.id}`,
+        status: "deleted",
+        deletedAt: existing.deletedAt ?? new Date(),
+        updatedByAgentId: actor?.agentId ?? null,
+        updatedByUserId: actor?.userId ?? null,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(userSecretDefinitions.companyId, companyId),
+        eq(userSecretDefinitions.id, definitionId),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+  }
+
   return {
     listProviders: () => listSecretProviders(),
 
@@ -2074,6 +2109,9 @@ export function secretService(db: Db) {
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
       const existing = await resolveUserSecretDefinition(companyId, { definitionId });
+      if (patch.status === "deleted") {
+        return removeUserSecretDefinitionInternal(companyId, existing.id, actor);
+      }
       const nextKey = patch.key?.trim() ?? existing.key;
       if (nextKey !== existing.key) {
         const duplicate = await getUserSecretDefinitionByKey(companyId, nextKey);
@@ -2088,11 +2126,10 @@ export function secretService(db: Db) {
           patch.providerConfigId,
         );
       }
-      const deleting = patch.status === "deleted";
       return db
         .update(userSecretDefinitions)
         .set({
-          key: deleting ? `${existing.key}__deleted__${existing.id}` : nextKey,
+          key: nextKey,
           name: patch.name?.trim() ?? existing.name,
           description: patch.description === undefined ? existing.description : patch.description,
           status: patch.status ?? existing.status,
@@ -2104,7 +2141,7 @@ export function secretService(db: Db) {
             patch.usageGuidance === undefined ? existing.usageGuidance : patch.usageGuidance,
           updatedByAgentId: actor?.agentId ?? null,
           updatedByUserId: actor?.userId ?? null,
-          deletedAt: deleting ? new Date() : existing.deletedAt,
+          deletedAt: existing.deletedAt,
           updatedAt: new Date(),
         })
         .where(and(
@@ -2119,36 +2156,7 @@ export function secretService(db: Db) {
       companyId: string,
       definitionId: string,
       actor?: { userId?: string | null; agentId?: string | null },
-    ) => {
-      const existing = await resolveUserSecretDefinition(companyId, { definitionId });
-      const values = await db
-        .select({ id: companySecrets.id })
-        .from(companySecrets)
-        .where(and(
-          eq(companySecrets.companyId, companyId),
-          eq(companySecrets.scope, "user"),
-          eq(companySecrets.userSecretDefinitionId, definitionId),
-        ));
-      for (const value of values) {
-        await removeSecretInternal(value.id);
-      }
-      return db
-        .update(userSecretDefinitions)
-        .set({
-          key: `${existing.key}__deleted__${existing.id}`,
-          status: "deleted",
-          deletedAt: existing.deletedAt ?? new Date(),
-          updatedByAgentId: actor?.agentId ?? null,
-          updatedByUserId: actor?.userId ?? null,
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(userSecretDefinitions.companyId, companyId),
-          eq(userSecretDefinitions.id, definitionId),
-        ))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-    },
+    ) => removeUserSecretDefinitionInternal(companyId, definitionId, actor),
 
     getUserSecretDefinitionCoverage: async (companyId: string, definitionId: string) => {
       await resolveUserSecretDefinition(companyId, { definitionId });

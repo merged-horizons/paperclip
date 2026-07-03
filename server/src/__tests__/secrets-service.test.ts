@@ -770,6 +770,70 @@ describeEmbeddedPostgres("secretService", () => {
     }));
   });
 
+  it("removes user secret values and provider material when update deletes a definition", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user-secret",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user-secret",
+      providerVersionRef: "aws-version-1",
+    });
+    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    const userSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionId: definition.id,
+      value: "user-one-secret",
+    });
+
+    const removed = await svc.updateUserSecretDefinition(
+      companyId,
+      definition.id,
+      { status: "deleted" },
+      { userId: "admin-user" },
+    );
+    const remainingValues = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.userSecretDefinitionId, definition.id));
+
+    expect(removed).toMatchObject({
+      id: definition.id,
+      key: `github_token__deleted__${definition.id}`,
+      status: "deleted",
+      updatedByUserId: "admin-user",
+    });
+    expect(remainingValues).toHaveLength(0);
+    expect(deleteSpy).toHaveBeenCalledWith(expect.objectContaining({
+      externalRef: userSecret.externalRef,
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: userSecret.key,
+        secretName: userSecret.name,
+        version: 1,
+      },
+      mode: "delete",
+    }));
+  });
+
   it("treats nullable user-secret value patches as non-rotation updates", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");
