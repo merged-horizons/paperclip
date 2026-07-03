@@ -688,6 +688,88 @@ describeEmbeddedPostgres("secretService", () => {
     expect(rows.filter((row) => row.key === "github_token" && row.deletedAt === null)).toHaveLength(1);
   });
 
+  it("removes user secret values and provider material when deleting a definition", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    await seedCompanyMember(companyId, "user-2", "member");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+    let nextVersion = 0;
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockImplementation(async (input) => {
+      nextVersion += 1;
+      const externalRef =
+        `arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/${input.context.secretKey}`;
+      return {
+        material: {
+          scheme: "aws_secrets_manager_v1",
+          secretId: externalRef,
+          versionId: `aws-version-${nextVersion}`,
+          source: "managed",
+        },
+        valueSha256: `value-sha-${nextVersion}`,
+        fingerprintSha256: `fingerprint-sha-${nextVersion}`,
+        externalRef,
+        providerVersionRef: `aws-version-${nextVersion}`,
+      };
+    });
+    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    const userOneSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionId: definition.id,
+      value: "user-one-secret",
+    });
+    const userTwoSecret = await svc.createCurrentUserSecretValue(companyId, "user-2", {
+      definitionId: definition.id,
+      value: "user-two-secret",
+    });
+
+    const removed = await svc.removeUserSecretDefinition(companyId, definition.id, { userId: "admin-user" });
+    const remainingValues = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.userSecretDefinitionId, definition.id));
+
+    expect(removed).toMatchObject({
+      id: definition.id,
+      key: `github_token__deleted__${definition.id}`,
+      status: "deleted",
+      updatedByUserId: "admin-user",
+    });
+    expect(remainingValues).toHaveLength(0);
+    expect(deleteSpy).toHaveBeenCalledTimes(2);
+    expect(deleteSpy).toHaveBeenCalledWith(expect.objectContaining({
+      externalRef: userOneSecret.externalRef,
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: userOneSecret.key,
+        secretName: userOneSecret.name,
+        version: 1,
+      },
+      mode: "delete",
+    }));
+    expect(deleteSpy).toHaveBeenCalledWith(expect.objectContaining({
+      externalRef: userTwoSecret.externalRef,
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: userTwoSecret.key,
+        secretName: userTwoSecret.name,
+        version: 1,
+      },
+      mode: "delete",
+    }));
+  });
+
   it("treats nullable user-secret value patches as non-rotation updates", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");

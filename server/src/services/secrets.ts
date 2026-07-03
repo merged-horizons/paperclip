@@ -1640,6 +1640,55 @@ export function secretService(db: Db) {
     }
   }
 
+  async function removeSecretInternal(secretId: string) {
+    const secret = await getById(secretId);
+    if (!secret) return null;
+    const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
+    const providerId = secret.provider as SecretProvider;
+    const provider = getSecretProvider(providerId);
+    if (secret.status !== "deleted") {
+      await db
+        .update(companySecrets)
+        .set({
+          key: `${secret.key}__deleted__${secret.id}`,
+          name: `${secret.name}__deleted__${secret.id}`,
+          status: "deleted",
+          deletedAt: secret.deletedAt ?? new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(companySecrets.id, secretId));
+    }
+    const providerConfig = secret.providerConfigId
+      ? await getProviderConfigById(secret.providerConfigId)
+      : null;
+    const providerRuntimeConfig =
+      providerConfig && providerConfig.status !== "disabled" && providerConfig.status !== "coming_soon"
+        ? toProviderVaultRuntimeConfig(providerConfig)
+        : null;
+    if (!secret.providerConfigId || providerRuntimeConfig) {
+      try {
+        await provider.deleteOrArchive({
+          material: versionRow?.material as Record<string, unknown> | undefined,
+          externalRef: secret.externalRef,
+          providerConfig: providerRuntimeConfig,
+          context: {
+            companyId: secret.companyId,
+            secretKey: secret.key,
+            secretName: secret.name,
+            version: secret.latestVersion,
+          },
+          mode: "delete",
+        });
+      } catch (error) {
+        if (!isSecretProviderClientError(error) || error.code !== "not_found") {
+          throw error;
+        }
+      }
+    }
+    await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
+    return secret;
+  }
+
   return {
     listProviders: () => listSecretProviders(),
 
@@ -2072,6 +2121,17 @@ export function secretService(db: Db) {
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
       const existing = await resolveUserSecretDefinition(companyId, { definitionId });
+      const values = await db
+        .select({ id: companySecrets.id })
+        .from(companySecrets)
+        .where(and(
+          eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "user"),
+          eq(companySecrets.userSecretDefinitionId, definitionId),
+        ));
+      for (const value of values) {
+        await removeSecretInternal(value.id);
+      }
       return db
         .update(userSecretDefinitions)
         .set({
@@ -3376,54 +3436,7 @@ export function secretService(db: Db) {
       return refs;
     },
 
-    remove: async (secretId: string) => {
-      const secret = await getById(secretId);
-      if (!secret) return null;
-      const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
-      const providerId = secret.provider as SecretProvider;
-      const provider = getSecretProvider(providerId);
-      if (secret.status !== "deleted") {
-        await db
-          .update(companySecrets)
-          .set({
-            key: `${secret.key}__deleted__${secret.id}`,
-            name: `${secret.name}__deleted__${secret.id}`,
-            status: "deleted",
-            deletedAt: secret.deletedAt ?? new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(companySecrets.id, secretId));
-      }
-      const providerConfig = secret.providerConfigId
-        ? await getProviderConfigById(secret.providerConfigId)
-        : null;
-      const providerRuntimeConfig =
-        providerConfig && providerConfig.status !== "disabled" && providerConfig.status !== "coming_soon"
-          ? toProviderVaultRuntimeConfig(providerConfig)
-          : null;
-      if (!secret.providerConfigId || providerRuntimeConfig) {
-        try {
-          await provider.deleteOrArchive({
-            material: versionRow?.material as Record<string, unknown> | undefined,
-            externalRef: secret.externalRef,
-            providerConfig: providerRuntimeConfig,
-            context: {
-              companyId: secret.companyId,
-              secretKey: secret.key,
-              secretName: secret.name,
-              version: secret.latestVersion,
-            },
-            mode: "delete",
-          });
-        } catch (error) {
-          if (!isSecretProviderClientError(error) || error.code !== "not_found") {
-            throw error;
-          }
-        }
-      }
-      await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
-      return secret;
-    },
+    remove: removeSecretInternal,
 
     normalizeAdapterConfigForPersistence: async (
       companyId: string,
