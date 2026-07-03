@@ -202,6 +202,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -824,6 +825,45 @@ export async function resolveExecutionRunAdapterConfig(input: {
     };
     for (const key of routineEnvResolution.secretKeys) {
       secretKeys.add(key);
+    }
+  }
+  // Pre-dispatch credential gate for codex_local: a managed Codex home with no
+  // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
+  // immediately fails with "no Codex credentials provisioned" (adapter_failed),
+  // making a configuration problem look like a runtime failure. Surface it as a
+  // configuration-incomplete blocker instead, naming the missing credential
+  // action and owner without leaking any secret value. This runs after secret
+  // resolution so a per-agent OPENAI_API_KEY (plain or resolved secret) counts
+  // as satisfying the credential. It shares the exact readiness predicate the
+  // adapter uses at execute time, so the two cannot drift.
+  if ((input.adapterType ?? null) === "codex_local") {
+    const resolvedEnv = parseObject(resolvedConfig.env);
+    const readiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId: input.companyId,
+      configuredCodexHome: readNonEmptyString(resolvedEnv.CODEX_HOME),
+      configuredApiKey: readNonEmptyString(resolvedEnv.OPENAI_API_KEY),
+    });
+    if (readiness.managed && !readiness.ready) {
+      throw new ConfigurationIncompleteFailure(
+        `configuration incomplete: no Codex credentials available for managed home "${readiness.effectiveHome}". ` +
+          `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`,
+        {
+          configurationIncomplete: {
+            reason: "codex_credentials_missing",
+            companyId: input.companyId,
+            agentId: input.agentId ?? null,
+            issueId: input.issueId ?? null,
+            projectId: input.projectId ?? null,
+            routineId: input.routineId ?? null,
+            responsibleUserId: input.responsibleUserId ?? null,
+            adapterType: "codex_local",
+            requiredEnvKeys: ["OPENAI_API_KEY"],
+            effectiveCodexHome: readiness.effectiveHome,
+            missingBindings: [],
+          },
+        },
+      );
     }
   }
   return {
