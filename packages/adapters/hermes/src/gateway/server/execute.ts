@@ -19,6 +19,10 @@ import {
   STOP_GRACE_MS,
 } from "../shared/constants.js";
 import {
+  buildHermesAuthRequiredErrorMeta,
+  detectHermesLoginRequired,
+} from "../../server/parse.js";
+import {
   allowsInsecureRemoteHttp,
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
@@ -622,6 +626,19 @@ function extractModel(value: unknown): string | null {
   return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
 }
 
+function extractProvider(value: unknown): string | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  return (
+    nonEmpty(record.provider) ??
+    nonEmpty(record.provider_id) ??
+    nonEmpty(record.providerId) ??
+    nonEmpty(asRecord(record.error)?.provider) ??
+    nonEmpty(asRecord(record.data)?.provider) ??
+    nonEmpty(asRecord(record.payload)?.provider)
+  );
+}
+
 function extractErrorMessage(value: unknown): string | null {
   const record = asRecord(value);
   return nonEmpty(record?.error) ?? nonEmpty(record?.message) ?? nonEmpty(record?.detail) ?? extractOutput(value);
@@ -654,6 +671,44 @@ export function mapFinalResultForTest(input: {
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
+  const loginMeta = mapped.errorCode
+    ? detectHermesLoginRequired({
+        adapterType: "hermes_gateway",
+        provider: extractProvider(payload),
+        stdout: input.outputChunks.join(""),
+        parsed: payload,
+      })
+    : null;
+  if (loginMeta?.requiresLogin) {
+    return {
+      exitCode: 1,
+      signal: mapped.signal,
+      timedOut: false,
+      provider: "hermes_gateway",
+      model: extractModel(payload),
+      errorCode: "hermes_auth_required",
+      errorMessage: "Hermes xAI OAuth login required",
+      errorMeta: buildHermesAuthRequiredErrorMeta(loginMeta),
+      ...(usage ? { usage } : {}),
+      ...(costUsd !== null ? { costUsd } : {}),
+      sessionId: sessionDisplayId,
+      sessionParams: {
+        hermesRunId: input.terminal.runId,
+        ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
+        strategy: input.strategy,
+      },
+      sessionDisplayId,
+      resultJson: {
+        run_id: input.terminal.runId,
+        status: input.terminal.status,
+        session_id: sessionDisplayId,
+        last_event: input.terminal.eventName ?? null,
+        auth_required: true,
+        provider: "xai-oauth",
+        reason: loginMeta.reason,
+      },
+    };
+  }
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -737,6 +792,24 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
+  const loginMeta = code !== "hermes_gateway_auth_failed"
+    ? detectHermesLoginRequired({
+        adapterType: "hermes_gateway",
+        httpStatus: hermesError.status ?? null,
+        responseBody: hermesError.body,
+      })
+    : null;
+  if (loginMeta?.requiresLogin) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_auth_required",
+      errorFamily: null,
+      errorMessage: "Hermes xAI OAuth login required",
+      errorMeta: buildHermesAuthRequiredErrorMeta(loginMeta),
+    };
+  }
   const errorMessage = code === "hermes_gateway_auth_failed"
     ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
     : redactErrorMessage(err, redactText);

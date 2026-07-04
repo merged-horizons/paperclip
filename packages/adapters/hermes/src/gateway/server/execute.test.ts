@@ -617,6 +617,40 @@ describe("testEnvironment", () => {
 });
 
 describe("mapFinalResultForTest", () => {
+  it("maps terminal xAI invalid_grant failures into hermes_auth_required", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: {
+            provider: "xai-oauth",
+            code: "invalid_grant",
+            message: "Authorization: Bearer secret-key",
+          },
+        },
+      },
+      outputChunks: ["X-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1"],
+      sessionKey: "paperclip:company:company-1:agent:agent-1:issue:issue-1",
+      strategy: "issue",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_auth_required");
+    expect(result.errorMessage).toBe("Hermes xAI OAuth login required");
+    expect(result.errorMeta).toEqual({
+      provider: "xai-oauth",
+      reason: "invalid_grant",
+      login: {
+        supported: true,
+        route: "/api/agents/{id}/hermes-login",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-key");
+    expect(JSON.stringify(result)).not.toContain("paperclip:company");
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {

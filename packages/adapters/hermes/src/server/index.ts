@@ -5,6 +5,16 @@
 export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export { detectModel, parseModelFromConfig, resolveProvider, inferProviderFromModel } from "./detect-model.js";
+export {
+  buildHermesAuthRequiredErrorMeta,
+  detectHermesLoginRequired,
+} from "./parse.js";
+export type {
+  HermesLoginRequiredInput,
+  HermesLoginRequiredReason,
+  HermesLoginRequiredResult,
+  HermesLoginRequiredSource,
+} from "./parse.js";
 export { getConfigSchema } from "./config-schema.js";
 export {
   listHermesSkills as listSkills,
