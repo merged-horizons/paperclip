@@ -37,7 +37,7 @@ const PAPERCLIP_SESSION_KEY_PATTERN =
 const OAUTH_CODE_PATTERN = /\b(code|oauth_code|authorization_code)=([A-Za-z0-9._~+/=-]{12,})\b/gi;
 
 const XAI_OAUTH_CONTEXT_RE =
-  /\b(?:xai[-_\s]?oauth|xai|x\.ai|grok)\b/i;
+  /\b(?:xai|x\.ai|grok)\b.{0,80}\boauth\b|\boauth\b.{0,80}\b(?:xai|x\.ai|grok)\b/i;
 const HERMES_OAUTH_CONTEXT_RE =
   /\b(?:hermes|profile)\b.{0,80}\boauth\b|\boauth\b.{0,80}\b(?:hermes|profile)\b/i;
 

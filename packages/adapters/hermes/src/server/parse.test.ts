@@ -35,6 +35,15 @@ describe("detectHermesLoginRequired", () => {
     });
   });
 
+  it("does not map a bare xAI 401 unless OAuth context or provider is present", () => {
+    expect(
+      detectHermesLoginRequired({
+        adapterType: "hermes_local",
+        stderr: "xAI API returned HTTP 401 unauthorized",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
   it("maps gateway terminal payloads that name xAI OAuth provider failures", () => {
     const result = detectHermesLoginRequired({
       adapterType: "hermes_gateway",
