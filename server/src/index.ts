@@ -46,6 +46,7 @@ import {
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  sweepTerminalGitWorktreeCleanup,
 } from "./services/index.js";
 import {
   parseAdapterRegistryEnv,
@@ -858,6 +859,11 @@ export async function startServer(): Promise<StartedServer> {
       if (setupCleanup.timedOut > 0 || setupCleanup.failed > 0) {
         logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
       }
+
+      const worktreeCleanup = await sweepTerminalGitWorktreeCleanup(db);
+      if (worktreeCleanup.cleaned > 0 || worktreeCleanup.preserved > 0 || worktreeCleanup.failed > 0) {
+        logger.warn({ ...worktreeCleanup }, "startup terminal git worktree cleanup changed workspace state");
+      }
     })().catch((err) => {
       logger.error({ err }, "startup heartbeat recovery failed");
     });
@@ -954,6 +960,12 @@ export async function startServer(): Promise<StartedServer> {
           const reviewed = await heartbeat.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+          }
+        })
+        .then(async () => {
+          const worktreeCleanup = await sweepTerminalGitWorktreeCleanup(db);
+          if (worktreeCleanup.cleaned > 0 || worktreeCleanup.preserved > 0 || worktreeCleanup.failed > 0) {
+            logger.warn({ ...worktreeCleanup }, "periodic terminal git worktree cleanup changed workspace state");
           }
         })
         .catch((err) => {

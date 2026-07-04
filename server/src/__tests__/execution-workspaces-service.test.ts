@@ -13,6 +13,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  workspaceOperations,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
@@ -23,6 +24,7 @@ import {
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
+  sweepTerminalGitWorktreeCleanup,
 } from "../services/execution-workspaces.ts";
 
 const execFileAsync = promisify(execFile);
@@ -157,6 +159,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(workspaceOperations);
     await db.delete(workspaceRuntimeServices);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -830,5 +833,228 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
+  }, 20_000);
+
+  it("sweeps a terminal clean merged git worktree without force-removing it", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-auto-clean-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+    const branchName = "paperclip-auto-clean";
+
+    await runGit(repoRoot, ["branch", branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        workspaceStrategy: {
+          type: "git_worktree",
+        },
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_repo",
+      isPrimary: true,
+      cwd: repoRoot,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Terminal clean worktree",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName,
+      baseRef: "main",
+      metadata: {
+        createdByRuntime: true,
+      },
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      title: "Done issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-901",
+      executionWorkspaceId,
+    });
+
+    const result = await sweepTerminalGitWorktreeCleanup(db, {
+      now: new Date("2026-07-04T00:00:00.000Z"),
+      limit: 10,
+    });
+
+    expect(result).toMatchObject({
+      checked: 1,
+      cleaned: 1,
+      preserved: 0,
+      failed: 0,
+    });
+    await expect(fs.stat(worktreePath)).rejects.toThrow();
+    await expect(
+      execFileAsync("git", ["branch", "--list", branchName], { cwd: repoRoot }),
+    ).resolves.toMatchObject({
+      stdout: "",
+    });
+
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [executionWorkspaceId]));
+
+    expect(workspace).toMatchObject({
+      status: "archived",
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+    });
+    expect(workspace?.closedAt).toBeInstanceOf(Date);
+
+    const operations = await db
+      .select({
+        phase: workspaceOperations.phase,
+        command: workspaceOperations.command,
+      })
+      .from(workspaceOperations)
+      .where(inArray(workspaceOperations.executionWorkspaceId, [executionWorkspaceId]));
+    const worktreeRemove = operations.find((operation) => operation.command?.includes("worktree remove"));
+    expect(worktreeRemove).toMatchObject({
+      phase: "worktree_cleanup",
+    });
+    expect(worktreeRemove?.command).not.toContain("--force");
+  }, 20_000);
+
+  it("preserves terminal dirty git worktrees and records a cleanup reason", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-auto-preserve-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+    const branchName = "paperclip-auto-preserve";
+    const now = new Date("2026-07-04T00:00:00.000Z");
+
+    await runGit(repoRoot, ["branch", branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+    await fs.writeFile(path.join(worktreePath, "untracked.txt"), "preserve me\n", "utf8");
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        workspaceStrategy: {
+          type: "git_worktree",
+        },
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_repo",
+      isPrimary: true,
+      cwd: repoRoot,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Terminal dirty worktree",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName,
+      baseRef: "main",
+      metadata: {
+        createdByRuntime: true,
+      },
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      title: "Done dirty issue",
+      status: "done",
+      priority: "medium",
+      identifier: "PAP-902",
+      executionWorkspaceId,
+    });
+
+    const result = await sweepTerminalGitWorktreeCleanup(db, {
+      now,
+      limit: 10,
+    });
+
+    expect(result).toMatchObject({
+      checked: 1,
+      cleaned: 0,
+      preserved: 1,
+      failed: 0,
+    });
+    expect(result.items[0]?.reason).toContain("Workspace has 1 untracked file.");
+    await expect(fs.stat(worktreePath)).resolves.toBeTruthy();
+
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [executionWorkspaceId]));
+
+    expect(workspace?.status).toBe("idle");
+    expect(workspace?.closedAt).toBeNull();
+    expect(workspace?.cleanupReason).toContain("Workspace has 1 untracked file.");
+    expect(workspace?.cleanupEligibleAt?.getTime()).toBeGreaterThan(now.getTime());
   }, 20_000);
 });

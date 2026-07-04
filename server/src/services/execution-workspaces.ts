@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
@@ -27,11 +27,32 @@ import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime-read-model.js";
+import { cleanupExecutionWorkspaceArtifacts } from "./workspace-runtime.js";
+import { workspaceOperationService } from "./workspace-operations.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const AUTO_CLEANUP_WORKSPACE_STATUSES = ["active", "idle", "in_review"] as const;
+const AUTO_CLEANUP_RECHECK_DELAY_MS = 24 * 60 * 60 * 1000;
+const AUTO_CLEANUP_REASON_PREFIX = "auto_cleanup_blocked";
+
+export interface TerminalGitWorktreeCleanupSweepItem {
+  workspaceId: string;
+  workspaceName: string;
+  status: "cleaned" | "preserved" | "failed";
+  reason: string | null;
+  warnings: string[];
+}
+
+export interface TerminalGitWorktreeCleanupSweepResult {
+  checked: number;
+  cleaned: number;
+  preserved: number;
+  failed: number;
+  items: TerminalGitWorktreeCleanupSweepItem[];
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -402,6 +423,269 @@ function selectPrimaryOverviewService(services: WorkspaceRuntimeService[]) {
 function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
   if (row.mode !== "shared_workspace" || !row.projectWorkspaceId) return false;
   return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
+}
+
+function formatAutoCleanupReason(reasons: string[]) {
+  return `${AUTO_CLEANUP_REASON_PREFIX}: ${reasons.join("; ")}`;
+}
+
+function terminalGitWorktreeAutoCleanupBlockers(
+  workspace: ExecutionWorkspaceRow,
+  readiness: ExecutionWorkspaceCloseReadiness | null,
+) {
+  const reasons: string[] = [];
+  if (!readiness) return ["Workspace close readiness could not be loaded."];
+
+  if (workspace.providerType !== "git_worktree") {
+    reasons.push("Workspace is not a local git worktree.");
+  }
+  if (readiness.isSharedWorkspace) {
+    reasons.push("Shared workspace sessions are not eligible for automatic destructive cleanup.");
+  }
+
+  const linkedIssues = readiness.linkedIssues;
+  if (linkedIssues.length === 0) {
+    reasons.push("Workspace has no linked terminal issue.");
+  }
+  const openIssues = linkedIssues.filter((issue) => !issue.isTerminal);
+  if (openIssues.length > 0) {
+    reasons.push(
+      openIssues.length === 1
+        ? `Workspace is still linked to open issue ${openIssues[0]?.identifier ?? openIssues[0]?.id}.`
+        : `Workspace is still linked to ${openIssues.length} open issues.`,
+    );
+  }
+
+  const runningServices = readiness.runtimeServices.filter((service) => service.status !== "stopped");
+  if (runningServices.length > 0) {
+    reasons.push(
+      runningServices.length === 1
+        ? "Workspace still has a running runtime service."
+        : `Workspace still has ${runningServices.length} running runtime services.`,
+    );
+  }
+
+  const git = readiness.git;
+  if (!git) {
+    reasons.push("Git readiness was unavailable.");
+    return reasons;
+  }
+  if (!git.workspacePath) {
+    reasons.push("Workspace has no local worktree path.");
+  }
+  if (!git.repoRoot) {
+    reasons.push("Git repository root could not be resolved.");
+  }
+  if (git.hasDirtyTrackedFiles) {
+    reasons.push(
+      git.dirtyEntryCount === 1
+        ? "Workspace has 1 modified tracked file."
+        : `Workspace has ${git.dirtyEntryCount} modified tracked files.`,
+    );
+  }
+  if (git.hasUntrackedFiles) {
+    reasons.push(
+      git.untrackedEntryCount === 1
+        ? "Workspace has 1 untracked file."
+        : `Workspace has ${git.untrackedEntryCount} untracked files.`,
+    );
+  }
+  if (!git.baseRef) {
+    reasons.push("Workspace has no base ref to prove merge safety.");
+  } else if (git.isMergedIntoBase !== true) {
+    reasons.push(`Workspace branch has not been proven merged into ${git.baseRef}.`);
+  }
+
+  return reasons;
+}
+
+async function patchWorkspaceCleanupState(
+  db: Db,
+  workspaceId: string,
+  patch: Partial<typeof executionWorkspaces.$inferInsert>,
+) {
+  await db
+    .update(executionWorkspaces)
+    .set({
+      ...patch,
+      updatedAt: new Date(),
+    })
+    .where(eq(executionWorkspaces.id, workspaceId));
+}
+
+export async function sweepTerminalGitWorktreeCleanup(
+  db: Db,
+  options: {
+    now?: Date;
+    limit?: number;
+    dryRun?: boolean;
+  } = {},
+): Promise<TerminalGitWorktreeCleanupSweepResult> {
+  const now = options.now ?? new Date();
+  const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 25), 100));
+  const dryRun = options.dryRun === true;
+  const readinessService = executionWorkspaceService(db);
+  const workspaceOperations = workspaceOperationService(db);
+  const result: TerminalGitWorktreeCleanupSweepResult = {
+    checked: 0,
+    cleaned: 0,
+    preserved: 0,
+    failed: 0,
+    items: [],
+  };
+
+  const eligibleAtCondition = or(
+    isNull(executionWorkspaces.cleanupEligibleAt),
+    lte(executionWorkspaces.cleanupEligibleAt, now),
+  );
+  const hasTerminalLinkedIssue = sql`exists (
+    select 1
+    from ${issues}
+    where ${issues.companyId} = ${executionWorkspaces.companyId}
+      and ${issues.executionWorkspaceId} = ${executionWorkspaces.id}
+      and ${issues.hiddenAt} is null
+      and ${issues.status} in ('done', 'cancelled')
+  )`;
+  const candidates = await db
+    .select()
+    .from(executionWorkspaces)
+    .where(
+      and(
+        inArray(executionWorkspaces.status, AUTO_CLEANUP_WORKSPACE_STATUSES),
+        eq(executionWorkspaces.providerType, "git_worktree"),
+        isNull(executionWorkspaces.closedAt),
+        eligibleAtCondition,
+        hasTerminalLinkedIssue,
+      ),
+    )
+    .orderBy(asc(executionWorkspaces.cleanupEligibleAt), desc(executionWorkspaces.lastUsedAt), asc(executionWorkspaces.id))
+    .limit(limit);
+
+  for (const workspace of candidates) {
+    result.checked += 1;
+    const readiness = await readinessService.getCloseReadiness(workspace.id);
+    const blockers = terminalGitWorktreeAutoCleanupBlockers(workspace, readiness);
+    if (blockers.length > 0) {
+      const reason = formatAutoCleanupReason(blockers);
+      result.preserved += 1;
+      result.items.push({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        status: "preserved",
+        reason,
+        warnings: readiness?.warnings ?? [],
+      });
+      if (!dryRun) {
+        await patchWorkspaceCleanupState(db, workspace.id, {
+          cleanupEligibleAt: new Date(now.getTime() + AUTO_CLEANUP_RECHECK_DELAY_MS),
+          cleanupReason: reason,
+        });
+      }
+      continue;
+    }
+
+    if (dryRun) {
+      result.cleaned += 1;
+      result.items.push({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        status: "cleaned",
+        reason: null,
+        warnings: readiness?.warnings ?? [],
+      });
+      continue;
+    }
+
+    const closedAt = new Date();
+    await patchWorkspaceCleanupState(db, workspace.id, {
+      status: "archived",
+      closedAt,
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+    });
+
+    const projectWorkspace = workspace.projectWorkspaceId
+      ? await db
+          .select({
+            cwd: projectWorkspaces.cwd,
+            cleanupCommand: projectWorkspaces.cleanupCommand,
+          })
+          .from(projectWorkspaces)
+          .where(
+            and(
+              eq(projectWorkspaces.id, workspace.projectWorkspaceId),
+              eq(projectWorkspaces.companyId, workspace.companyId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const projectPolicy = workspace.projectId
+      ? await db
+          .select({
+            executionWorkspacePolicy: projects.executionWorkspacePolicy,
+          })
+          .from(projects)
+          .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, workspace.companyId)))
+          .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
+      : null;
+    const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+
+    try {
+      const cleanup = await cleanupExecutionWorkspaceArtifacts({
+        workspace,
+        projectWorkspace,
+        teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+        cleanupCommand: config?.cleanupCommand ?? null,
+        forceGitWorktreeRemove: false,
+        recorder: workspaceOperations.createRecorder({
+          companyId: workspace.companyId,
+          executionWorkspaceId: workspace.id,
+        }),
+      });
+      const cleanupReason = cleanup.warnings.length > 0 ? cleanup.warnings.join(" | ") : null;
+      await patchWorkspaceCleanupState(db, workspace.id, {
+        status: cleanup.cleaned ? "archived" : "cleanup_failed",
+        closedAt,
+        cleanupReason,
+      });
+      if (cleanup.cleaned) {
+        result.cleaned += 1;
+        result.items.push({
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+          status: "cleaned",
+          reason: cleanupReason,
+          warnings: cleanup.warnings,
+        });
+      } else {
+        result.failed += 1;
+        result.items.push({
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+          status: "failed",
+          reason: cleanupReason ?? "Workspace artifact cleanup did not remove the worktree.",
+          warnings: cleanup.warnings,
+        });
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await patchWorkspaceCleanupState(db, workspace.id, {
+        status: "cleanup_failed",
+        closedAt,
+        cleanupReason: reason,
+      });
+      result.failed += 1;
+      result.items.push({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        status: "failed",
+        reason,
+        warnings: readiness?.warnings ?? [],
+      });
+    }
+  }
+
+  return result;
 }
 
 async function loadEffectiveRuntimeServicesByExecutionWorkspace(
