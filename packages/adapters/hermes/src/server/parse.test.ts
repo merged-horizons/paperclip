@@ -44,6 +44,16 @@ describe("detectHermesLoginRequired", () => {
     ).toBe(false);
   });
 
+  it("maps xai_oauth spelling with invalid_grant output", () => {
+    const result = detectHermesLoginRequired({
+      adapterType: "hermes_local",
+      stderr: "provider xai_oauth returned invalid_grant",
+    });
+
+    expect(result.requiresLogin).toBe(true);
+    expect(result.reason).toBe("invalid_grant");
+  });
+
   it("maps gateway terminal payloads that name xAI OAuth provider failures", () => {
     const result = detectHermesLoginRequired({
       adapterType: "hermes_gateway",
