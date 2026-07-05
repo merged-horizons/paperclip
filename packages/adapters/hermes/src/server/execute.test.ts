@@ -95,6 +95,24 @@ describe("execute", () => {
     expect(result.summary).toContain("previous xAI OAuth invalid_grant 401");
   });
 
+  it("does not classify failed agent stdout as auth required", async () => {
+    mockedRunChildProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "Lydia reported that a previous xAI OAuth invalid_grant 401 was resolved.",
+      stderr: "Error: process failed for an unrelated reason",
+      pid: 123,
+      startedAt: "2026-07-04T00:00:00.000Z",
+    });
+
+    const result = await execute(makeCtx({ provider: "xai-oauth" }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.errorMessage).toBe("Error: process failed for an unrelated reason");
+  });
+
   it("leaves generic non-Hermes auth stderr in the existing failure shape", async () => {
     mockedRunChildProcess.mockResolvedValueOnce({
       exitCode: 1,

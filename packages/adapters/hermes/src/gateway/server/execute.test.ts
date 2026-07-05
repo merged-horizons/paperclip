@@ -398,6 +398,43 @@ describe("execute", () => {
     expect(result.summary).toBe("done");
   });
 
+  it("does not classify failed message deltas with xAI auth text as auth required", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: message.delta",
+              "data: {\"delta\":\"Lydia mentioned a previous xAI OAuth invalid_grant 401.\"}",
+              "",
+              "event: run.failed",
+              "data: {\"status\":\"failed\",\"error\":\"boom\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "failed", error: "boom" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorMessage).toBe("boom");
+    expect(result.summary).toContain("previous xAI OAuth invalid_grant 401");
+  });
+
   it("falls back to polling when SSE is unavailable", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -740,6 +777,26 @@ describe("mapFinalResultForTest", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.errorCode).toBeUndefined();
+    expect(result.summary).toContain("previous xAI OAuth invalid_grant 401");
+  });
+
+  it("does not map cancelled terminal output with auth-looking text to auth required", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "cancelled",
+        payload: {
+          status: "cancelled",
+          output: "Lydia mentioned a previous xAI OAuth invalid_grant 401 in her answer.",
+        },
+      },
+      outputChunks: ["Lydia mentioned a previous xAI OAuth invalid_grant 401 in her answer."],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_cancelled");
     expect(result.summary).toContain("previous xAI OAuth invalid_grant 401");
   });
 

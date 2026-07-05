@@ -644,6 +644,33 @@ function extractErrorMessage(value: unknown): string | null {
   return nonEmpty(record?.error) ?? nonEmpty(record?.message) ?? nonEmpty(record?.detail) ?? extractOutput(value);
 }
 
+function buildTerminalAuthDetectionPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const provider = extractProvider(payload);
+  if (provider) out.provider = provider;
+
+  const directError = payload.error;
+  if (directError !== undefined) out.error = directError;
+
+  const data = asRecord(payload.data);
+  if (data?.error !== undefined) out.data = { error: data.error };
+
+  const nestedPayload = asRecord(payload.payload);
+  if (nestedPayload?.error !== undefined) out.payload = { error: nestedPayload.error };
+
+  for (const key of ["code", "error_code", "errorCode", "reason"]) {
+    if (payload[key] !== undefined) out[key] = payload[key];
+  }
+
+  if (provider || directError !== undefined || data?.error !== undefined || nestedPayload?.error !== undefined) {
+    for (const key of ["message", "detail"]) {
+      if (payload[key] !== undefined) out[key] = payload[key];
+    }
+  }
+
+  return out;
+}
+
 function terminalResultCode(status: string): { exitCode: number; signal: string | null; errorCode: string | null } {
   if (status === "completed") return { exitCode: 0, signal: null, errorCode: null };
   if (FAILURE_STATUSES.has(status)) return { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" };
@@ -671,12 +698,11 @@ export function mapFinalResultForTest(input: {
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
-  const loginMeta = mapped.errorCode
+  const loginMeta = FAILURE_STATUSES.has(input.terminal.status)
     ? detectHermesLoginRequired({
         adapterType: "hermes_gateway",
         provider: extractProvider(payload),
-        stdout: input.outputChunks.join(""),
-        parsed: payload,
+        parsed: buildTerminalAuthDetectionPayload(payload),
       })
     : null;
   if (loginMeta?.requiresLogin) {

@@ -535,17 +535,17 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
-  const loginMeta = detectHermesLoginRequired({
-    adapterType: "hermes_local",
-    provider: resolvedProvider,
-    stdout: result.stdout || "",
-    stderr: result.stderr || "",
-    parsed: {
-      response: parsed.response,
-      errorMessage: parsed.errorMessage,
-      sessionId: parsed.sessionId,
-    },
-  });
+  const failed = !result.timedOut && (result.exitCode ?? 0) !== 0;
+  const loginMeta = failed
+    ? detectHermesLoginRequired({
+        adapterType: "hermes_local",
+        provider: resolvedProvider,
+        stderr: result.stderr || "",
+        parsed: {
+          errorMessage: parsed.errorMessage,
+        },
+      })
+    : null;
 
   await ctx.onLog(
     "stdout",
@@ -568,7 +568,7 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   }
 
-  if (!result.timedOut && (result.exitCode ?? 0) !== 0 && loginMeta.requiresLogin) {
+  if (loginMeta?.requiresLogin) {
     executionResult.errorCode = "hermes_auth_required";
     executionResult.errorMessage = "Hermes xAI OAuth login required";
     executionResult.errorMeta = buildHermesAuthRequiredErrorMeta(loginMeta);
