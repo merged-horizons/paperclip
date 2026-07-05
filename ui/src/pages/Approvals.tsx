@@ -16,7 +16,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 type StatusFilter = "pending" | "all";
 
 export function Approvals() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -126,6 +126,7 @@ export function Approvals() {
               pendingAction={
                 approveMutation.isPending ? "approve" : rejectMutation.isPending ? "reject" : null
               }
+              companyPrefix={selectedCompany?.issuePrefix ?? null}
             />
           ))}
         </div>
