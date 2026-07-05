@@ -27,6 +27,7 @@ import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
 } from "./workspace-runtime-read-model.js";
+import { runWorkspaceIsFinalized } from "./issues.js";
 import { cleanupExecutionWorkspaceArtifacts } from "./workspace-runtime.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 
@@ -34,9 +35,22 @@ type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
-const AUTO_CLEANUP_WORKSPACE_STATUSES = ["active", "idle", "in_review"] as const;
+const AUTO_CLEANUP_WORKSPACE_STATUSES = ["active", "idle", "in_review", "cleanup_failed"] as const;
+const AUTO_CLEANUP_FIRST_SWEEP_MIN_TERMINAL_AGE_MS = 5 * 60 * 1000;
 const AUTO_CLEANUP_RECHECK_DELAY_MS = 24 * 60 * 60 * 1000;
+const AUTO_CLEANUP_FAILURE_RETRY_DELAY_MS = 24 * 60 * 60 * 1000;
 const AUTO_CLEANUP_REASON_PREFIX = "auto_cleanup_blocked";
+
+type TerminalGitWorktreeCleanupIssue = {
+  id: string;
+  identifier: string | null;
+  status: string;
+  executionRunId: string | null;
+  completedAt: Date | null;
+  cancelledAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
 
 export interface TerminalGitWorktreeCleanupSweepItem {
   workspaceId: string;
@@ -429,6 +443,90 @@ function formatAutoCleanupReason(reasons: string[]) {
   return `${AUTO_CLEANUP_REASON_PREFIX}: ${reasons.join("; ")}`;
 }
 
+function terminalGitWorktreeCleanupIssueLabel(issue: TerminalGitWorktreeCleanupIssue) {
+  return issue.identifier ?? issue.id;
+}
+
+function terminalGitWorktreeCleanupIssueTerminalAt(issue: TerminalGitWorktreeCleanupIssue) {
+  return issue.completedAt ?? issue.cancelledAt ?? issue.updatedAt ?? issue.createdAt;
+}
+
+async function loadTerminalGitWorktreeCleanupIssue(
+  db: Db,
+  workspace: Pick<ExecutionWorkspaceRow, "companyId" | "id">,
+): Promise<TerminalGitWorktreeCleanupIssue | null> {
+  const terminalIssues = await db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      status: issues.status,
+      executionRunId: issues.executionRunId,
+      completedAt: issues.completedAt,
+      cancelledAt: issues.cancelledAt,
+      createdAt: issues.createdAt,
+      updatedAt: issues.updatedAt,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, workspace.companyId),
+        eq(issues.executionWorkspaceId, workspace.id),
+        isNull(issues.hiddenAt),
+        inArray(issues.status, ["done", "cancelled"]),
+      ),
+    );
+
+  terminalIssues.sort((a, b) =>
+    terminalGitWorktreeCleanupIssueTerminalAt(b).getTime()
+      - terminalGitWorktreeCleanupIssueTerminalAt(a).getTime()
+  );
+  return terminalIssues[0] ?? null;
+}
+
+async function terminalGitWorktreeFinalizeBlockers(
+  db: Db,
+  workspace: ExecutionWorkspaceRow,
+  terminalIssue: TerminalGitWorktreeCleanupIssue | null,
+  now: Date,
+) {
+  const reasons: string[] = [];
+  if (!terminalIssue) {
+    reasons.push("Workspace has no visible terminal issue to prove cleanup ownership.");
+    return reasons;
+  }
+
+  const terminalAt = terminalGitWorktreeCleanupIssueTerminalAt(terminalIssue);
+  if (
+    workspace.cleanupEligibleAt == null
+    && terminalAt.getTime() > now.getTime() - AUTO_CLEANUP_FIRST_SWEEP_MIN_TERMINAL_AGE_MS
+  ) {
+    reasons.push(
+      `Terminal issue ${terminalGitWorktreeCleanupIssueLabel(terminalIssue)} is too recent for first cleanup sweep.`,
+    );
+  }
+
+  if (!terminalIssue.executionRunId) {
+    reasons.push(
+      `Terminal issue ${terminalGitWorktreeCleanupIssueLabel(terminalIssue)} has no execution run to prove workspace finalization.`,
+    );
+    return reasons;
+  }
+
+  const finalized = await runWorkspaceIsFinalized(
+    db,
+    workspace.companyId,
+    workspace.id,
+    terminalIssue.executionRunId,
+  );
+  if (!finalized) {
+    reasons.push(
+      `Terminal issue ${terminalGitWorktreeCleanupIssueLabel(terminalIssue)} execution run has not reached workspace_finalize.`,
+    );
+  }
+
+  return reasons;
+}
+
 function terminalGitWorktreeAutoCleanupBlockers(
   workspace: ExecutionWorkspaceRow,
   readiness: ExecutionWorkspaceCloseReadiness | null,
@@ -513,6 +611,81 @@ async function patchWorkspaceCleanupState(
     .where(eq(executionWorkspaces.id, workspaceId));
 }
 
+function nextCleanupAttemptAt(now: Date, delayMs = AUTO_CLEANUP_RECHECK_DELAY_MS) {
+  return new Date(now.getTime() + delayMs);
+}
+
+async function markTerminalGitWorktreeCleanupPreserved(
+  db: Db,
+  workspace: ExecutionWorkspaceRow,
+  now: Date,
+  reason: string,
+) {
+  await patchWorkspaceCleanupState(db, workspace.id, {
+    cleanupEligibleAt: nextCleanupAttemptAt(now),
+    cleanupReason: reason,
+  });
+}
+
+async function markTerminalGitWorktreeCleanupFailed(
+  db: Db,
+  workspace: ExecutionWorkspaceRow,
+  now: Date,
+  reason: string,
+) {
+  await patchWorkspaceCleanupState(db, workspace.id, {
+    status: "cleanup_failed",
+    closedAt: null,
+    cleanupEligibleAt: nextCleanupAttemptAt(now, AUTO_CLEANUP_FAILURE_RETRY_DELAY_MS),
+    cleanupReason: reason,
+  });
+}
+
+async function archiveTerminalGitWorktreeCleanupCandidate(
+  db: Db,
+  workspace: ExecutionWorkspaceRow,
+  closedAt: Date,
+) {
+  const noActiveLinkedIssue = sql`not exists (
+    select 1
+    from ${issues}
+    where ${issues.companyId} = ${executionWorkspaces.companyId}
+      and ${issues.executionWorkspaceId} = ${executionWorkspaces.id}
+      and ${issues.hiddenAt} is null
+      and ${issues.status} not in ('done', 'cancelled')
+  )`;
+  const noRunningRuntimeService = sql`not exists (
+    select 1
+    from ${workspaceRuntimeServices}
+    where ${workspaceRuntimeServices.companyId} = ${executionWorkspaces.companyId}
+      and ${workspaceRuntimeServices.executionWorkspaceId} = ${executionWorkspaces.id}
+      and ${workspaceRuntimeServices.status} <> 'stopped'
+  )`;
+  const archived = await db
+    .update(executionWorkspaces)
+    .set({
+      status: "archived",
+      closedAt,
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+      updatedAt: closedAt,
+    })
+    .where(
+      and(
+        eq(executionWorkspaces.companyId, workspace.companyId),
+        eq(executionWorkspaces.id, workspace.id),
+        eq(executionWorkspaces.providerType, "git_worktree"),
+        isNull(executionWorkspaces.closedAt),
+        inArray(executionWorkspaces.status, AUTO_CLEANUP_WORKSPACE_STATUSES),
+        noActiveLinkedIssue,
+        noRunningRuntimeService,
+      ),
+    )
+    .returning({ id: executionWorkspaces.id });
+
+  return archived.length > 0;
+}
+
 export async function sweepTerminalGitWorktreeCleanup(
   db: Db,
   options: {
@@ -534,8 +707,12 @@ export async function sweepTerminalGitWorktreeCleanup(
     items: [],
   };
 
+  const firstSweepLastUsedCutoff = new Date(now.getTime() - AUTO_CLEANUP_FIRST_SWEEP_MIN_TERMINAL_AGE_MS);
   const eligibleAtCondition = or(
-    isNull(executionWorkspaces.cleanupEligibleAt),
+    and(
+      isNull(executionWorkspaces.cleanupEligibleAt),
+      lte(executionWorkspaces.lastUsedAt, firstSweepLastUsedCutoff),
+    ),
     lte(executionWorkspaces.cleanupEligibleAt, now),
   );
   const hasTerminalLinkedIssue = sql`exists (
@@ -563,8 +740,12 @@ export async function sweepTerminalGitWorktreeCleanup(
 
   for (const workspace of candidates) {
     result.checked += 1;
+    const terminalIssue = await loadTerminalGitWorktreeCleanupIssue(db, workspace);
     const readiness = await readinessService.getCloseReadiness(workspace.id);
-    const blockers = terminalGitWorktreeAutoCleanupBlockers(workspace, readiness);
+    const blockers = [
+      ...terminalGitWorktreeAutoCleanupBlockers(workspace, readiness),
+      ...await terminalGitWorktreeFinalizeBlockers(db, workspace, terminalIssue, now),
+    ];
     if (blockers.length > 0) {
       const reason = formatAutoCleanupReason(blockers);
       result.preserved += 1;
@@ -576,10 +757,7 @@ export async function sweepTerminalGitWorktreeCleanup(
         warnings: readiness?.warnings ?? [],
       });
       if (!dryRun) {
-        await patchWorkspaceCleanupState(db, workspace.id, {
-          cleanupEligibleAt: new Date(now.getTime() + AUTO_CLEANUP_RECHECK_DELAY_MS),
-          cleanupReason: reason,
-        });
+        await markTerminalGitWorktreeCleanupPreserved(db, workspace, now, reason);
       }
       continue;
     }
@@ -596,15 +774,58 @@ export async function sweepTerminalGitWorktreeCleanup(
       continue;
     }
 
-    const closedAt = new Date();
-    await patchWorkspaceCleanupState(db, workspace.id, {
-      status: "archived",
-      closedAt,
-      cleanupEligibleAt: null,
-      cleanupReason: null,
-    });
+    const freshWorkspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.companyId, workspace.companyId), eq(executionWorkspaces.id, workspace.id)))
+      .then((rows) => rows[0] ?? null);
+    const freshTerminalIssue = freshWorkspace
+      ? await loadTerminalGitWorktreeCleanupIssue(db, freshWorkspace)
+      : null;
+    const freshReadiness = freshWorkspace
+      ? await readinessService.getCloseReadiness(freshWorkspace.id)
+      : null;
+    const freshBlockers = freshWorkspace
+      ? [
+          ...terminalGitWorktreeAutoCleanupBlockers(freshWorkspace, freshReadiness),
+          ...await terminalGitWorktreeFinalizeBlockers(db, freshWorkspace, freshTerminalIssue, now),
+        ]
+      : ["Workspace disappeared before cleanup could be applied."];
+    if (!freshWorkspace || freshBlockers.length > 0) {
+      const reason = formatAutoCleanupReason(freshBlockers);
+      result.preserved += 1;
+      result.items.push({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        status: "preserved",
+        reason,
+        warnings: freshReadiness?.warnings ?? readiness?.warnings ?? [],
+      });
+      if (freshWorkspace) {
+        await markTerminalGitWorktreeCleanupPreserved(db, freshWorkspace, now, reason);
+      }
+      continue;
+    }
 
-    const projectWorkspace = workspace.projectWorkspaceId
+    const closedAt = new Date();
+    const archived = await archiveTerminalGitWorktreeCleanupCandidate(db, freshWorkspace, closedAt);
+    if (!archived) {
+      const reason = formatAutoCleanupReason([
+        "Workspace became ineligible before cleanup could be atomically archived.",
+      ]);
+      result.preserved += 1;
+      result.items.push({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        status: "preserved",
+        reason,
+        warnings: freshReadiness?.warnings ?? [],
+      });
+      await markTerminalGitWorktreeCleanupPreserved(db, freshWorkspace, now, reason);
+      continue;
+    }
+
+    const projectWorkspace = freshWorkspace.projectWorkspaceId
       ? await db
           .select({
             cwd: projectWorkspaces.cwd,
@@ -613,26 +834,26 @@ export async function sweepTerminalGitWorktreeCleanup(
           .from(projectWorkspaces)
           .where(
             and(
-              eq(projectWorkspaces.id, workspace.projectWorkspaceId),
-              eq(projectWorkspaces.companyId, workspace.companyId),
+              eq(projectWorkspaces.id, freshWorkspace.projectWorkspaceId),
+              eq(projectWorkspaces.companyId, freshWorkspace.companyId),
             ),
           )
           .then((rows) => rows[0] ?? null)
       : null;
-    const projectPolicy = workspace.projectId
+    const projectPolicy = freshWorkspace.projectId
       ? await db
           .select({
             executionWorkspacePolicy: projects.executionWorkspacePolicy,
           })
           .from(projects)
-          .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, workspace.companyId)))
+          .where(and(eq(projects.id, freshWorkspace.projectId), eq(projects.companyId, freshWorkspace.companyId)))
           .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
       : null;
-    const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+    const config = readExecutionWorkspaceConfig((freshWorkspace.metadata as Record<string, unknown> | null) ?? null);
 
     try {
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
-        workspace,
+        workspace: freshWorkspace,
         projectWorkspace,
         teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
         cleanupCommand: config?.cleanupCommand ?? null,
@@ -643,12 +864,13 @@ export async function sweepTerminalGitWorktreeCleanup(
         }),
       });
       const cleanupReason = cleanup.warnings.length > 0 ? cleanup.warnings.join(" | ") : null;
-      await patchWorkspaceCleanupState(db, workspace.id, {
-        status: cleanup.cleaned ? "archived" : "cleanup_failed",
-        closedAt,
-        cleanupReason,
-      });
       if (cleanup.cleaned) {
+        await patchWorkspaceCleanupState(db, freshWorkspace.id, {
+          status: "archived",
+          closedAt,
+          cleanupEligibleAt: null,
+          cleanupReason,
+        });
         result.cleaned += 1;
         result.items.push({
           workspaceId: workspace.id,
@@ -658,6 +880,12 @@ export async function sweepTerminalGitWorktreeCleanup(
           warnings: cleanup.warnings,
         });
       } else {
+        await markTerminalGitWorktreeCleanupFailed(
+          db,
+          freshWorkspace,
+          now,
+          cleanupReason ?? "Workspace artifact cleanup did not remove the worktree.",
+        );
         result.failed += 1;
         result.items.push({
           workspaceId: workspace.id,
@@ -669,11 +897,7 @@ export async function sweepTerminalGitWorktreeCleanup(
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      await patchWorkspaceCleanupState(db, workspace.id, {
-        status: "cleanup_failed",
-        closedAt,
-        cleanupReason: reason,
-      });
+      await markTerminalGitWorktreeCleanupFailed(db, freshWorkspace, now, reason);
       result.failed += 1;
       result.items.push({
         workspaceId: workspace.id,
