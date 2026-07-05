@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
@@ -224,6 +225,15 @@ export function ApprovalDetail() {
             payload={payload}
             approval={approval}
             companyPrefix={selectedCompany?.issuePrefix ?? null}
+          />
+          <PluginSlotOutlet
+            slotTypes={["approvalCard"]}
+            context={{
+              companyId: approval.companyId,
+              companyPrefix: selectedCompany?.issuePrefix ?? null,
+            }}
+            componentProps={{ approval, payload }}
+            className="mt-3 space-y-3"
           />
           <button
             type="button"
