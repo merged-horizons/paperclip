@@ -77,6 +77,24 @@ describe("execute", () => {
     expect(JSON.stringify(result)).not.toContain("secret-token");
   });
 
+  it("does not return hermes_auth_required for successful output mentioning xAI auth text", async () => {
+    mockedRunChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "Lydia reported that a previous xAI OAuth invalid_grant 401 was resolved.\n\nsession_id: s1",
+      stderr: "",
+      pid: 123,
+      startedAt: "2026-07-04T00:00:00.000Z",
+    });
+
+    const result = await execute(makeCtx());
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.summary).toContain("previous xAI OAuth invalid_grant 401");
+  });
+
   it("leaves generic non-Hermes auth stderr in the existing failure shape", async () => {
     mockedRunChildProcess.mockResolvedValueOnce({
       exitCode: 1,

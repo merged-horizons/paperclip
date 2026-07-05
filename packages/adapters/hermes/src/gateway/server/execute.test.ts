@@ -326,6 +326,78 @@ describe("execute", () => {
     expect(logText).not.toContain(agentSessionKey);
   });
 
+  it("does not classify successful agent output with xAI auth text as auth required", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: message.delta",
+              "data: {\"delta\":\"Lydia says a previous xAI OAuth invalid_grant 401 was fixed.\"}",
+              "",
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"Lydia says a previous xAI OAuth invalid_grant 401 was fixed.\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.summary).toContain("previous xAI OAuth invalid_grant 401");
+  });
+
+  it("ignores auth-looking text in hook-like gateway events on successful runs", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: hook_response",
+              "data: {\"type\":\"system\",\"subtype\":\"hook_response\",\"output\":\"Previous summary mentioned xAI OAuth invalid_grant 401.\"}",
+              "",
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"done\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.summary).toBe("done");
+  });
+
   it("falls back to polling when SSE is unavailable", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -649,6 +721,26 @@ describe("mapFinalResultForTest", () => {
     });
     expect(JSON.stringify(result)).not.toContain("secret-key");
     expect(JSON.stringify(result)).not.toContain("paperclip:company");
+  });
+
+  it("does not map completed terminal payloads with auth-looking output to auth required", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "completed",
+        payload: {
+          status: "completed",
+          output: "Lydia mentioned a previous xAI OAuth invalid_grant 401 in her answer.",
+        },
+      },
+      outputChunks: ["Lydia mentioned a previous xAI OAuth invalid_grant 401 in her answer."],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.summary).toContain("previous xAI OAuth invalid_grant 401");
   });
 
   it("maps failed statuses into adapter errors", () => {
