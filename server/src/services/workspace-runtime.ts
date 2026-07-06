@@ -2048,6 +2048,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   } | null;
   cleanupCommand?: string | null;
   teardownCommand?: string | null;
+  forceGitWorktreeRemove?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
   const warnings: string[] = [];
@@ -2104,9 +2105,15 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
       } else {
         try {
+          const worktreeRemoveArgs = [
+            "worktree",
+            "remove",
+            ...(input.forceGitWorktreeRemove === false ? [] : ["--force"]),
+            workspacePath,
+          ];
           await recordGitOperation(input.recorder, {
             phase: "worktree_cleanup",
-            args: ["worktree", "remove", "--force", workspacePath],
+            args: worktreeRemoveArgs,
             cwd: repoRoot,
             metadata: {
               workspaceId: input.workspace.id,

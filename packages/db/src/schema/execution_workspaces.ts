@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   index,
@@ -64,5 +65,16 @@ export const executionWorkspaces = pgTable(
       table.companyId,
       table.branchName,
     ),
+    terminalGitCleanupIdx: index("execution_workspaces_terminal_git_cleanup_idx")
+      .on(
+        table.cleanupEligibleAt,
+        table.lastUsedAt,
+        table.id,
+      )
+      .where(
+        sql`${table.providerType} = 'git_worktree'
+          and ${table.closedAt} is null
+          and ${table.status} in ('active', 'idle', 'in_review', 'cleanup_failed')`,
+      ),
   }),
 );

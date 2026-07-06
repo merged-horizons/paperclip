@@ -1,0 +1,1 @@
+CREATE INDEX "execution_workspaces_terminal_git_cleanup_idx" ON "execution_workspaces" USING btree ("cleanup_eligible_at","last_used_at","id") WHERE provider_type = 'git_worktree' and closed_at is null and status in ('active', 'idle', 'in_review', 'cleanup_failed');
