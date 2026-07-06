@@ -2777,6 +2777,8 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations[1]?.metadata).toMatchObject({
       cleanupAction: "worktree_remove",
     });
+    expect(operations[1]?.command).toBe(`git worktree remove ${workspace.worktreePath}`);
+    expect(operations[1]?.command).not.toContain("--force");
     expect(operations[2]?.metadata).toMatchObject({
       cleanupAction: "branch_delete",
     });

@@ -830,5 +830,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
+    const worktreeRemoveAction = readiness?.plannedActions.find((action) => action.kind === "git_worktree_remove");
+    expect(worktreeRemoveAction?.command).toBe(`git worktree remove ${worktreePath}`);
+    expect(worktreeRemoveAction?.command).not.toContain("--force");
   }, 20_000);
 });

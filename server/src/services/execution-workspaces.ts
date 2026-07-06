@@ -951,7 +951,7 @@ export function executionWorkspaceService(db: Db) {
           kind: "git_worktree_remove",
           label: "Remove git worktree",
           description: `Paperclip will run git worktree cleanup for ${workspacePath}.`,
-          command: `git worktree remove --force ${workspacePath}`,
+          command: `git worktree remove ${workspacePath}`,
         });
       }
 
